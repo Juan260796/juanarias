@@ -2,12 +2,12 @@ package co.edu.uniquindio.Biblioteca.model;
 
 public class Empleado {
     private String nombre;
-    private int idEmpleado;
+    private String idEmpleado;
 
     public Empleado(){
 
     }
-        public Empleado(String nombre, int idEmpleado){
+        public Empleado(String nombre, String idEmpleado){
         this.nombre= nombre;
         this.idEmpleado= idEmpleado;
     }
@@ -21,18 +21,13 @@ public class Empleado {
         this.nombre= nombre;
     }
 
-    public int setIdeEmpleado(){
+    public String getIdeEmpleado(){
         return idEmpleado;
 
     }
 
-    public void getIdEmpleado(int idEmpleado){
+    public void setIdEmpleado(String idEmpleado){
         this.idEmpleado= idEmpleado;
-
-    }
-
-    interface GestionInventario{
-        void gestionarItem (Libro libro);
 
     }
 

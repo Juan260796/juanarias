@@ -1,62 +1,69 @@
 package co.edu.uniquindio.Biblioteca.model;
 
-import java.util.Date;
+import java.time.LocalDate;
 
 public class Prestamo {
-    private Date fechaPrestamo;
-    private Date fechaDevolucion;
+    private LocalDate fechaPrestamo;
+    private LocalDate fechaDevolucion;
     private Libro libro;
     private Usuario usuario;
 
-    public Prestamo(Libro libro, Usuario usuario, Date date, Date date1) {
+    public Prestamo() {
 
     }
 
-    public Prestamo (Date fechaPrestamo, Date fechaDevolucion,
-                      Libro libro, Usuario usuario){
-        this.fechaPrestamo= fechaPrestamo;
-        this.fechaDevolucion= fechaDevolucion;
+    public Prestamo (Libro libro, Usuario usuario, LocalDate fechaDevolucion){
         this.libro= libro;
         this.usuario= usuario;
-
+        this.fechaPrestamo= LocalDate.now();
+        this.fechaDevolucion= fechaDevolucion;
+        libro.prestar();
     }
 
-    public Date getFechaPrestamo(){
+
+    public LocalDate getFechaPrestamo(){
         return fechaPrestamo;
 
     }
 
-    public void setFechaPrestamo(Date fechaPrestamo){
+    public void setFechaPrestamo(LocalDate fechaPrestamo){
         this.fechaPrestamo= fechaPrestamo;
 
     }
 
-    public Date getFechaDevolucion(){
+    public LocalDate getFechaDevolucion(){
         return fechaDevolucion;
 
     }
 
-    public void setFechaDevolucion(Date fechaDevolucion){
+    public void setFechaDevolucion(LocalDate fechaDevolucion){
         this.fechaDevolucion= fechaDevolucion;
 
     }
-     public Libro setLibro(){
+     public Libro getLibro(){
         return libro;
 
      }
 
-     public void getLibro(Libro libro){
+     public void setLibro(Libro libro){
         this.libro= libro;
 
      }
 
-     public Usuario setUsuario(){
+     public Usuario getUsuario(){
         return usuario;
 
      }
 
-     public void getUsuario(Usuario usuario){
+     public void setUsuario(Usuario usuario){
         this.usuario= usuario;
+    }
+
+        public void devolverLibro() {
+        libro.devolver();
 
      }
+
 }
+
+

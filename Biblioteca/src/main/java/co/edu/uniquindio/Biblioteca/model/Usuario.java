@@ -5,15 +5,17 @@ import java.util.ArrayList;
 
 public class Usuario {
     private String nombre;
-    private int idUsuario;
+    private String idUsuario;
+    private List<Prestamo> prestamosActivos;
 
     public Usuario(){
 
     }
 
-        public Usuario(String nombre, int idUsuario){
+        public Usuario(String nombre, String idUsuario){
         this.nombre= nombre;
         this.idUsuario= idUsuario;
+        this.prestamosActivos= new ArrayList<>();
         }
 
         public String getNombre(){
@@ -26,20 +28,34 @@ public class Usuario {
 
         }
 
-        public int getIdUsuario(){
+        public String getIdUsuario(){
         return idUsuario;
 
         }
 
-        public void setIdUsuario(int idUsuario){
-
+        public void setIdUsuario(String idUsuario){
         this.idUsuario= idUsuario;
+
         }
 
-        @Override
+        public List<Prestamo> getPrestamosActivos(){
+        return prestamosActivos;
+
+        }
+
+        public void agregarPrestamo(Prestamo prestamo) {
+        this.prestamosActivos.add(prestamo);
+
+        }
+
+
+    @Override
         public String toString() {
-        return "Usuario: " + nombre + ", Idetificacion: " + idUsuario;
-    }
+        return "Usuario{" +
+                " nombre='" + nombre + '\'' +
+                ", IdUsuario='" + idUsuario + '\''+
+                ", prestamos activos='" + prestamosActivos + '}';
+        }
 
 
 
