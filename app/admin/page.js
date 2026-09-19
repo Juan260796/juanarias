@@ -221,9 +221,13 @@ function promotionIsToday(promo) {
 }
 
 export default function Admin() {
+  const [serviceSearch, setServiceSearch] = useState("");
   const router = useRouter();
   const [token, setToken] = useState("");
   const [data, setData] = useState({ clientes: [], servicios: [], suscripciones: [], ganancias: [], promociones: [], premios_fidelidad: [], inventario: [], inventario_historico: [], proveedores: [], asignaciones: [], order_counts: {} });
+  const filteredServices = data.servicios.filter((service) =>
+  service.nombre.toLowerCase().includes(serviceSearch.toLowerCase())
+);
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState(false);
   const [message, setMessage] = useState("");
@@ -2251,12 +2255,22 @@ Disculpa las molestias ${String.fromCodePoint(0x1F64F, 0x1F3FE)}`);
           <button className="button primary" disabled={working}>{working ? "Creando..." : "Crear servicio streaming"}</button>
         </form>
 
+      
+
         {data.servicios.length > 0 && (
           <section className="serviceCatalog">
-            <h2>Servicios disponibles</h2>
+            <h2>Servicios disponibles</h2>    
+<input
+  type="text"
+  placeholder="Buscar servicio..."
+  value={serviceSearch}
+  onChange={(e) => setServiceSearch(e.target.value)}
+  className="serviceSearch"
+/>
+
             {bulkDeleteBar("servicios", data.servicios.map((service) => service.id), "/api/admin/servicios", "servicio")}
             <div className="catalogGrid">
-              {data.servicios.map((s) => {
+              {filteredServices.map((s) => {
                 const duration = serviceDuration(s);
                 return (
                   <div className="card catalogItem serviceManageCard" key={s.id}>
