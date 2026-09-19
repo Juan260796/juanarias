@@ -37,3 +37,4 @@ La v34 agrega respaldo en tiempo real de clientes y de todos los pedidos cuyo pr
 - Se valida que el perfil/cupo esté libre y que el servicio sea compatible con la cuenta de stock asignada.
 - Se agregó selección múltiple para borrar pedidos, clientes, servicios, promociones, proveedores y cuentas de inventario.
 - No requiere SQL adicional.
+Conexion GitHub Vercel funcionando
