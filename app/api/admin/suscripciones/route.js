@@ -210,7 +210,7 @@ export async function DELETE(request) {
   if (!id) return Response.json({ error: "Falta el ID de la suscripción." }, { status: 400 });
 
   // Guardamos primero si este pedido pertenece a JU para actualizar el respaldo
-  // incluso después de borrarlo de Supabase.
+// después del proceso de eliminación o desactivación.
   const googleSnapshot = await getOrderSyncSnapshot(supabase, id);
 
   // Guardamos qué cuentas estaban usando este pedido para liberar sus perfiles/cupos
@@ -234,9 +234,42 @@ export async function DELETE(request) {
       .eq("suscripcion_id", id);
     if (releaseError) return Response.json({ error: releaseError.message }, { status: 400 });
   }
+  const { data: subscription } = await supabase
+  .from("suscripciones")
+  .select("created_at")
+  .eq("id", id)
+  .single();
 
-  const { error } = await supabase.from("suscripciones").delete().eq("id", id);
-  if (error) return Response.json({ error: error.message }, { status: 400 });
+const diasActiva = subscription?.created_at
+  ? Math.floor(
+      (new Date() - new Date(subscription.created_at)) /
+      (1000 * 60 * 60 * 24)
+    )
+  : 0;
+
+  if (diasActiva > 5) {
+
+  const { error } = await supabase
+    .from("suscripciones")
+    .update({ activo: false })
+    .eq("id", id);
+
+  if (error) {
+    return Response.json({ error: error.message }, { status: 400 });
+  }
+
+} else {
+
+  const { error } = await supabase
+    .from("suscripciones")
+    .delete()
+    .eq("id", id);
+
+  if (error) {
+    return Response.json({ error: error.message }, { status: 400 });
+  }
+
+}
 
   await Promise.all(inventoryIds.map((inventoryId) => recalcInventoryState(supabase, inventoryId)));
   if (googleSnapshot?.isJU) await syncOrderDelete(id);
