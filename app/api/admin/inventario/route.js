@@ -145,9 +145,8 @@ export async function POST(request) {
   const fecha_carga = String(body.fecha_carga || "").trim() || undefined;
 
   let cupos_total = Number(body.cupos_total || 1);
-  if (tipo === "chatgpt") cupos_total = 15;
-  if (tipo === "gemini") cupos_total = 4;
-  if (!Number.isInteger(cupos_total) || cupos_total < 1 || cupos_total > 50) return Response.json({ error: "El número de perfiles/cupos no es válido." }, { status: 400 });
+
+  if (!Number.isInteger(cupos_total) || cupos_total < 1) return Response.json({ error: "El número de perfiles/cupos no es válido." }, { status: 400 });
   const perfiles_pins = tipo === "estandar" ? normalizeProfilePins(body.perfiles_pins, cupos_total, pin) : {};
 
   if (tipo === "estandar" && !correo) return Response.json({ error: "El correo/acceso es obligatorio para una cuenta estándar." }, { status: 400 });
@@ -454,9 +453,8 @@ export async function PATCH(request) {
   if (body.proveedor_id) changes.proveedor_id = String(body.proveedor_id);
   if (Object.prototype.hasOwnProperty.call(body, "cupos_total")) {
     let total = Number(body.cupos_total);
-    if (tipo === "chatgpt") total = 15;
-    if (tipo === "gemini") total = 4;
-    if (!Number.isInteger(total) || total < 1 || total > 50) return Response.json({ error: "Cantidad de cupos inválida." }, { status: 400 });
+  
+    if (!Number.isInteger(total) || total < 1 ) return Response.json({ error: "Cantidad de cupos inválida." }, { status: 400 });
     changes.cupos_total = total;
   }
   if (Object.prototype.hasOwnProperty.call(body, "duracion_tipo") || Object.prototype.hasOwnProperty.call(body, "duracion_cantidad")) {

@@ -687,7 +687,7 @@ export default function Admin() {
       servicio_id: service.id,
       duracion_tipo: type === "gemini" ? "meses" : "dias",
       duracion_cantidad: type === "gemini" ? 1 : 30,
-      cupos_total: type === "chatgpt" ? 15 : type === "gemini" ? 4 : 1,
+      cupos_total: prev.cupos_total || 1,
       correo: "", clave: "", pin: "", perfiles_pins: {}, grupo: ""
     }));
   }
@@ -1110,7 +1110,7 @@ Disculpa las molestias ${String.fromCodePoint(0x1F64F, 0x1F3FE)}`);
     const service = (data.servicios || []).find((entry) => entry.id === item.servicio_id) || null;
     const type = effectiveDeliveryType(service);
     const activeCount = (data.asignaciones || []).filter((assignment) => assignment.activo && assignment.inventario_id === item.id).length;
-    const defaultSlots = type === "chatgpt" ? 15 : type === "gemini" ? 4 : Math.max(Number(item.cupos_total || 1), activeCount || 1);
+    const defaultSlots = Math.max(Number(item.cupos_total || 1), activeCount || 1);
     setReplacementForm({ old_inventory_id: item.id });
     setReplacementAccountForm({
       proveedor_id: "",
@@ -1186,7 +1186,7 @@ Disculpa las molestias ${String.fromCodePoint(0x1F64F, 0x1F3FE)}`);
       return;
     }
 
-    const totalSlots = replacementType === "chatgpt" ? 15 : replacementType === "gemini" ? 4 : Number(replacementAccountForm.cupos_total || 0);
+    const totalSlots = Number(replacementAccountForm.cupos_total || 0);
     const highestRequiredSlot = replacementSourceAssignments.reduce((max, assignment) => Math.max(max, Number(assignment.cupo_numero || 1)), 0);
     if (replacementType === "estandar" && (!Number.isInteger(totalSlots) || totalSlots < highestRequiredSlot)) {
       setError(`La cuenta de garantía necesita al menos ${highestRequiredSlot} perfiles para conservar el mismo número de perfil de cada cliente.`);
@@ -2260,13 +2260,17 @@ Disculpa las molestias ${String.fromCodePoint(0x1F64F, 0x1F3FE)}`);
         {data.servicios.length > 0 && (
           <section className="serviceCatalog">
             <h2>Servicios disponibles</h2>    
-<input
-  type="text"
-  placeholder="Buscar servicio..."
-  value={serviceSearch}
-  onChange={(e) => setServiceSearch(e.target.value)}
-  className="serviceSearch"
-/>
+<div className="serviceSearchWrapper">
+  <span className="serviceSearchIcon">🔍</span>
+
+  <input
+    type="text"
+    placeholder="Buscar servicio..."
+    value={serviceSearch}
+    onChange={(e) => setServiceSearch(e.target.value)}
+    className="serviceSearch"
+  />
+</div>
 
             {bulkDeleteBar("servicios", data.servicios.map((service) => service.id), "/api/admin/servicios", "servicio")}
             <div className="catalogGrid">
@@ -2419,11 +2423,11 @@ Disculpa las molestias ${String.fromCodePoint(0x1F64F, 0x1F3FE)}`);
     const selectedUploadService = data.servicios.find((service) => service.id === inventoryForm.servicio_id) || null;
     const uploadType = effectiveDeliveryType(selectedUploadService);
     const selectedSlots = availableSlots(selectedInventoryItem);
-    const uploadProfiles = Math.max(1, Math.min(50, Number(inventoryForm.cupos_total) || 1));
+    const uploadProfiles = Math.max(1, Number(inventoryForm.cupos_total) || 1);
     const editService = data.servicios.find((service) => service.id === inventoryEditForm.servicio_id) || null;
     const editType = effectiveDeliveryType(editService);
-    const editProfiles = Math.max(1, Math.min(50, Number(inventoryEditForm.cupos_total) || 1));
-    const replacementProfiles = Math.max(1, Math.min(50, Number(replacementAccountForm.cupos_total) || 1));
+    const editProfiles = Math.max(1, Number(inventoryEditForm.cupos_total) || 1);
+    const replacementProfiles = Math.max(1, Number(replacementAccountForm.cupos_total) || 1);
 
     const inventoryServices = data.servicios
       .filter((service) => service.activo && effectiveDeliveryType(service) !== "manual")
@@ -2546,7 +2550,11 @@ Disculpa las molestias ${String.fromCodePoint(0x1F64F, 0x1F3FE)}`);
               </select>
             </label>
 
-            {selectedUploadService && <div className="typeBanner"><strong>{inventoryServiceLabel(selectedUploadService)}</strong><span>{uploadType === "chatgpt" ? "15 cupos por cuenta" : uploadType === "gemini" ? "4 cupos por grupo" : "Perfiles configurables"}</span></div>}
+            {selectedUploadService && <div className="typeBanner"><strong>{inventoryServiceLabel(selectedUploadService)}</strong><span>{uploadType === "chatgpt"
+    ? "Cupos configurables"
+    : uploadType === "gemini"
+    ? "Cupos configurables"
+    : "Perfiles configurables"}</span></div>}
             {selectedUploadService && inventoryDurationControls(inventoryForm, setInventoryForm, uploadType)}
 
             {selectedUploadService && uploadType === "gemini" ? (
@@ -2558,14 +2566,23 @@ Disculpa las molestias ${String.fromCodePoint(0x1F64F, 0x1F3FE)}`);
               </div>
             ) : null}
 
-            {selectedUploadService && uploadType === "estandar" && (
+            {selectedUploadService && (
               <>
-                <label>Número de perfiles
-                  <input type="number" min="1" max="50" value={inventoryForm.cupos_total} onChange={(e) => setInventoryForm({ ...inventoryForm, cupos_total: e.target.value })} onBlur={() => {
-                    const parsed = Number(inventoryForm.cupos_total);
-                    setInventoryForm((prev) => ({ ...prev, cupos_total: Number.isInteger(parsed) && parsed >= 1 ? Math.min(parsed, 50) : 1 }));
-                  }} required />
-                </label>
+            <label className="numberProfilesTest">
+  NÚMERO DE CUPOS / PERFILES
+  <input
+    type="number"
+    min="1"
+    value={inventoryForm.cupos_total || ""}
+    onChange={(e) =>
+      setInventoryForm({
+        ...inventoryForm,
+        cupos_total: e.target.value === "" ? "" : Number(e.target.value)
+      })
+    }
+  />
+</label>   
+{uploadType === "estandar" && (
                 <div className="profilePinsBox">
                   <div className="profilePinsTitle"><strong>PIN por perfil</strong><span>Opcional. Cada perfil puede tener un PIN diferente.</span></div>
                   <div className="profilePinsGrid">
@@ -2576,10 +2593,14 @@ Disculpa las molestias ${String.fromCodePoint(0x1F64F, 0x1F3FE)}`);
                     ))}
                   </div>
                 </div>
+                )}
               </>
             )}
-            {selectedUploadService && uploadType === "chatgpt" && <div className="fixedCapacity">Cupos totales: <strong>15</strong> · al entregar eliges el número de cupo libre.</div>}
-            {selectedUploadService && uploadType === "gemini" && <div className="fixedCapacity">Cupos totales por grupo: <strong>4</strong> · el Gmail del cliente se escribe antes de generar la entrega.</div>}
+            {selectedUploadService && (
+  <div className="fixedCapacity">
+    Cupos totales configurables: <strong>{uploadProfiles}</strong> · puedes definir la cantidad de cupos disponibles.
+  </div>
+)}
 
             <label>Fecha de carga<input type="date" value={inventoryForm.fecha_carga} onChange={(e) => setInventoryForm({ ...inventoryForm, fecha_carga: e.target.value })} /></label>
             <label>Nota adicional<textarea placeholder="Opcional: instrucciones internas, observaciones, etc." value={inventoryForm.notas} onChange={(e) => setInventoryForm({ ...inventoryForm, notas: e.target.value })} /></label>
@@ -2616,7 +2637,7 @@ Disculpa las molestias ${String.fromCodePoint(0x1F64F, 0x1F3FE)}`);
 
                 <div className="typeBanner guaranteeServiceBanner">
                   <strong>{inventoryServiceLabel(replacementService)}</strong>
-                  <span>{replacementType === "chatgpt" ? "15 cupos por cuenta" : replacementType === "gemini" ? "4 cupos por grupo" : `${replacementProfiles} perfiles configurados`}</span>
+                  <span>{`${replacementProfiles} perfiles configurados`}</span>
                 </div>
 
                 <label>Proveedor
