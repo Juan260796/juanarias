@@ -56,7 +56,7 @@ export async function POST(request) {
   const fecha_inicio = String(body.fecha_inicio || "");
   const fecha_vencimiento = String(body.fecha_vencimiento || "");
   const ganancia_neta = Number(body.ganancia_neta);
-  const fecha_ganancia = String(body.fecha_ganancia || fecha_inicio || "");
+  const fecha_ganancia = String(fecha_inicio || "");
 
   if (!cliente_id || !servicio_id || !fecha_inicio || !fecha_vencimiento) {
     return Response.json({ error: "Cliente, servicio y fechas son obligatorios." }, { status: 400 });
