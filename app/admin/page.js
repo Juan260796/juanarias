@@ -1058,15 +1058,15 @@ Disculpa las molestias ${String.fromCodePoint(0x1F64F, 0x1F3FE)}`);
       const result = await api("/api/admin/inventario", {
         method: "PATCH",
         body: JSON.stringify({
-          id: selectedInventoryItem.id,
-          action: "asignar_nuevo_pedido",
-          cliente_id: selectedDeliveryClient.id,
-          fecha_inicio: deliveryForm.fecha_inicio || todayISO(),
-          cupo_numero: chosenSlot,
-          correo_cliente: deliveryForm.correo_cliente,
-          ganancia_neta: Number(profitValue || 0),
-          fecha_ganancia: todayISO()
-        })
+  id: selectedInventoryItem.id,
+  action: "asignar_nuevo_pedido",
+  cliente_id: selectedDeliveryClient.id,
+  fecha_inicio: deliveryForm.fecha_inicio || todayISO(),
+  cupo_numero: chosenSlot,
+  correo_cliente: deliveryForm.correo_cliente,
+  ganancia_neta: Number(profitValue || 0),
+  fecha_ganancia: deliveryForm.fecha_inicio || todayISO()
+})
       });
 
       const newSub = {
