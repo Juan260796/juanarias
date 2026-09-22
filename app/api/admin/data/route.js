@@ -189,7 +189,7 @@ export async function GET(request) {
   let profitSchemaReady = true;
   let suscripcionesRes = await supabase
     .from("suscripciones")
-    .select("id,cliente_id,servicio_id,fecha_inicio,fecha_vencimiento,ganancia_neta,fecha_ganancia,activo,clientes(id,nombre,username,telefono),servicios(*)")
+    .select("id,cliente_id,servicio_id,fecha_inicio,fecha_vencimiento,ganancia_neta,fecha_ganancia,activo,reporte_vencimiento,fecha_reporte,clientes(id,nombre,username,telefono)")
     .order("fecha_vencimiento", { ascending: true });
 
   if (suscripcionesRes.error) {
@@ -200,7 +200,7 @@ export async function GET(request) {
     profitSchemaReady = false;
     suscripcionesRes = await supabase
       .from("suscripciones")
-      .select("id,cliente_id,servicio_id,fecha_inicio,fecha_vencimiento,activo,clientes(id,nombre,username,telefono),servicios(*)")
+      .select("id,cliente_id,servicio_id,fecha_inicio,fecha_vencimiento,activo,reporte_vencimiento,fecha_reporte,clientes(id,nombre,username,telefono)")
       .order("fecha_vencimiento", { ascending: true });
     if (suscripcionesRes.error) return Response.json({ error: suscripcionesRes.error.message }, { status: 500 });
   }

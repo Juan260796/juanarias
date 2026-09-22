@@ -220,6 +220,8 @@ function promotionIsToday(promo) {
   return promo?.activo !== false && String(promo?.fecha_inicio || "") <= today && String(promo?.fecha_fin || "") >= today;
 }
 
+
+
 export default function Admin() {
   const [serviceSearch, setServiceSearch] = useState("");
   const router = useRouter();
@@ -291,6 +293,25 @@ export default function Admin() {
     if (!res.ok) throw new Error(json.error || "Ocurrió un error.");
     return json;
   }, [token]);
+
+  async function marcarReportada(id) {
+  try {
+    console.log("Marcando reportada ID:", id);
+
+    await api("/api/admin/suscripciones", {
+      method: "PATCH",
+      body: JSON.stringify({
+        id,
+        action: "marcar_reportada"
+      })
+    });
+
+    await refresh();
+
+  } catch (error) {
+    console.error("Error marcar reportada:", error);
+  }
+}
 
   const refresh = useCallback(async (accessToken = token) => {
     const result = await api(`/api/admin/data?today=${todayISO()}`, {}, accessToken);
@@ -1754,6 +1775,8 @@ Disculpa las molestias ${String.fromCodePoint(0x1F64F, 0x1F3FE)}`);
     if (rows.length === 0) return <div className="card emptyState">{emptyText}</div>;
     const visibleIds = rows.map((row) => row.id);
     return (
+
+      
       <>
         {bulkDeleteBar("suscripciones", visibleIds, "/api/admin/suscripciones", "pedido")}
         <div className="card accountsTableCard">
@@ -1770,6 +1793,7 @@ Disculpa las molestias ${String.fromCodePoint(0x1F64F, 0x1F3FE)}`);
                   <th>Fecha final</th>
                   <th>Días restantes</th>
                   <th>WhatsApp</th>
+                  <th>Reporte</th>
                   <th>Acciones</th>
                 </tr>
               </thead>
@@ -1797,7 +1821,28 @@ Disculpa las molestias ${String.fromCodePoint(0x1F64F, 0x1F3FE)}`);
                       <td>{editing ? <input type="date" value={subscriptionEditForm.fecha_inicio} onChange={(e) => setSubscriptionEditForm((prev) => ({ ...prev, fecha_inicio: e.target.value }))} /> : formatDate(s.fecha_inicio)}</td>
                       <td>{formatDate(s.fecha_vencimiento)}</td>
                       <td><span className={`daysBadge ${daysTone(s.days)}`}>{remainingText(s.days)}</span></td>
-                      <td>{wa ? <a className="waTableButton" href={wa} target="_blank" rel="noreferrer">WhatsApp</a> : <span className="noPhone">Sin celular</span>}</td>
+                      <td>{wa ? (
+  <button
+    className="waTableButton"
+    onClick={async () => {
+  window.open(wa, "_blank");
+  await marcarReportada(s.id);
+    }}
+  >
+    WhatsApp
+  </button>
+
+) : (
+  <span className="noPhone">Sin WhatsApp</span>
+)}</td>
+
+<td>
+  {s.reporte_vencimiento ? (
+    <span className="status ok">Reportada</span>
+  ) : (
+    <span className="status suspendedStatus">Pendiente</span>
+  )}
+</td>
                       <td>
                         <div className="tableActions">
                           {editing ? (

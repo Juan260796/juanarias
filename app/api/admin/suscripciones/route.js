@@ -78,11 +78,42 @@ export async function POST(request) {
 export async function PATCH(request) {
   const auth = await requireAdmin(request);
   if (auth.response) return auth.response;
-
-  const { supabase } = auth;
+const { supabase } = auth;
   const body = await request.json().catch(() => ({}));
-  const id = String(body.id || "");
-  if (!id) return Response.json({ error: "Falta el ID de la suscripción." }, { status: 400 });
+const id = String(body.id || "");
+const action = String(body.action || "");
+
+if (!id) return Response.json({ error: "Falta el ID de la suscripción." }, { status: 400 });
+
+
+if (action === "marcar_reportada") {
+
+console.log("ENTRÓ MARCAR REPORTADA", id);
+
+  const { data, error } = await supabase
+    .from("suscripciones")
+    .update({
+      reporte_vencimiento: true,
+      fecha_reporte: new Date().toISOString()
+    })
+    .eq("id", id)
+    .select("*")
+    .single();
+
+  if (error) {
+  console.log("ERROR SUPABASE:", error);
+  return Response.json(
+    { error: error.message },
+    { status: 400 }
+  );
+}
+
+  return Response.json({
+    suscripcion: data
+  });
+}
+
+  
 
   const { data: current, error: currentError } = await supabase
     .from("suscripciones")
