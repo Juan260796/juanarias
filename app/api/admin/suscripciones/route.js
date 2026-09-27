@@ -117,16 +117,29 @@ console.log("ENTRÓ MARCAR REPORTADA", id);
 
   const { data: current, error: currentError } = await supabase
     .from("suscripciones")
-    .select("id,cliente_id,servicio_id,fecha_inicio,fecha_vencimiento,activo")
+    .select("id,cliente_id,servicio_id,fecha_inicio,fecha_vencimiento,activo,reporte_vencimiento,fecha_reporte")
     .eq("id", id)
     .single();
   if (currentError || !current) return Response.json({ error: currentError?.message || "Pedido no encontrado." }, { status: 404 });
 
   const changes = {};
+  console.log("PATCH RENOVACION RECIBIDO:", body);
   if (typeof body.activo === "boolean") changes.activo = body.activo;
   if (body.fecha_vencimiento) changes.fecha_vencimiento = String(body.fecha_vencimiento);
+  if (body.fecha_inicio) changes.fecha_inicio = String(body.fecha_inicio);
+if (typeof body.reporte_vencimiento === "boolean") {
+  changes.reporte_vencimiento = body.reporte_vencimiento;
+}
 
-  const wantsEditableFields = Boolean(body.fecha_inicio || body.servicio_id || Object.prototype.hasOwnProperty.call(body, "cupo_numero"));
+if ("fecha_reporte" in body) {
+  changes.fecha_reporte = body.fecha_reporte;
+}
+console.log("CAMBIOS A GUARDAR:", changes);
+
+  const wantsEditableFields = Boolean(
+  (body.fecha_inicio || body.servicio_id || Object.prototype.hasOwnProperty.call(body, "cupo_numero"))
+  && !body.es_renovacion
+);
 
   if (wantsEditableFields) {
     const nextStart = String(body.fecha_inicio || current.fecha_inicio || "").trim();
@@ -214,9 +227,8 @@ console.log("ENTRÓ MARCAR REPORTADA", id);
 
     if (inventory?.etiqueta === "externa") {
       const { error: externalDateError } = await supabase.from("inventario_cuentas").update({
-        fecha_carga: nextStart,
-        fecha_vencimiento: recalculatedExpiry
-      }).eq("id", inventory.id);
+  fecha_carga: nextStart
+}).eq("id", inventory.id);
       if (externalDateError) return Response.json({ error: externalDateError.message }, { status: 400 });
     }
   }
@@ -224,11 +236,26 @@ console.log("ENTRÓ MARCAR REPORTADA", id);
   if (Object.keys(changes).length === 0) {
     return Response.json({ error: "No hay cambios para guardar." }, { status: 400 });
   }
+console.log("CAMBIOS FINALES GUARDAR:", changes);
+  console.log("CAMBIOS FINALES GUARDAR:", changes);
 
-  const { error } = await supabase.from("suscripciones").update(changes).eq("id", id);
-  if (error) return Response.json({ error: error.message }, { status: 400 });
-  await syncOrderMembership(supabase, id);
-  return Response.json({ ok: true });
+const { data: updated, error } = await supabase
+  .from("suscripciones")
+  .update(changes)
+  .eq("id", id)
+  .select("*")
+  .single();
+
+console.log("RESULTADO UPDATE:", updated);
+
+if (error) {
+  console.log("ERROR UPDATE:", error);
+  return Response.json({ error: error.message }, { status: 400 });
+}
+
+// await syncOrderMembership(supabase, id);
+
+return Response.json({ ok: true, updated });
 }
 
 export async function DELETE(request) {
@@ -241,7 +268,7 @@ export async function DELETE(request) {
   if (!id) return Response.json({ error: "Falta el ID de la suscripción." }, { status: 400 });
 
   // Guardamos primero si este pedido pertenece a JU para actualizar el respaldo
-// después del proceso de eliminación o desactivación.
+// después del proceso de eliminación renov desactivación.
   const googleSnapshot = await getOrderSyncSnapshot(supabase, id);
 
   // Guardamos qué cuentas estaban usando este pedido para liberar sus perfiles/cupos

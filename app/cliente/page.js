@@ -246,7 +246,7 @@ export default function Cliente() {
               <b>¡IMPORTANTE!</b>
               <span>⚠ Uso apropiado</span>
               <span>❌ No cambiar nombres</span>
-              <span>❌ No usarla en más de 1 dispositivo a la vez</span>
+              <span>🚫 No usarla en más de 1 dispositivo a la vez</span>
               <span>❌ Prohibido compartir la pantalla con otras personas</span>
             </>
           )}

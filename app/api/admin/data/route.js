@@ -187,10 +187,24 @@ export async function GET(request) {
   // recuperamos pedidos con el esquema anterior para que clientes, servicios,
   // inventario y demás información sigan siendo visibles.
   let profitSchemaReady = true;
-  let suscripcionesRes = await supabase
-    .from("suscripciones")
-    .select("id,cliente_id,servicio_id,fecha_inicio,fecha_vencimiento,ganancia_neta,fecha_ganancia,activo,reporte_vencimiento,fecha_reporte,clientes(id,nombre,username,telefono)")
-    .order("fecha_vencimiento", { ascending: true });
+
+let suscripcionesRes = await supabase
+  .from("suscripciones")
+  .select(`
+    id,
+    cliente_id,
+    servicio_id,
+    fecha_inicio,
+    fecha_vencimiento,
+    ganancia_neta,
+    fecha_ganancia,
+    activo,
+    reporte_vencimiento,
+    fecha_reporte,
+    clientes(id,nombre,username,telefono),
+    servicio:servicios!suscripciones_servicio_id_fkey(nombre) 
+  `)
+  .order("fecha_vencimiento", { ascending: true });
 
   if (suscripcionesRes.error) {
     const msg = String(suscripcionesRes.error.message || "").toLowerCase();
@@ -199,9 +213,20 @@ export async function GET(request) {
 
     profitSchemaReady = false;
     suscripcionesRes = await supabase
-      .from("suscripciones")
-      .select("id,cliente_id,servicio_id,fecha_inicio,fecha_vencimiento,activo,reporte_vencimiento,fecha_reporte,clientes(id,nombre,username,telefono)")
-      .order("fecha_vencimiento", { ascending: true });
+  .from("suscripciones")
+  .select(`
+    id,
+    cliente_id,
+    servicio_id,
+    fecha_inicio,
+    fecha_vencimiento,
+    activo,
+    reporte_vencimiento,
+    fecha_reporte,
+    clientes(id,nombre,username,telefono),
+    servicio:servicios!suscripciones_servicio_id_fkey(nombre)
+  `)
+  .order("fecha_vencimiento", { ascending: true });
     if (suscripcionesRes.error) return Response.json({ error: suscripcionesRes.error.message }, { status: 500 });
   }
 
@@ -225,6 +250,8 @@ export async function GET(request) {
   const managedInventoryHistory = inventoryHistory.filter((item) => item.etiqueta !== "externa");
   const visibleInventory = managedInventoryHistory.filter((item) => item.estado !== "reemplazada");
 
+  console.log("ANTES DE ENVIAR SUSCRIPCIONES:", visibleSubscriptions);
+  
   return Response.json({
     clientes: clientesRes.data || [],
     servicios: serviciosRes.data || [],

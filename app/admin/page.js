@@ -112,13 +112,11 @@ function serviceDuration(service) {
 }
 
 function serviceLabel(service) {
-  const duration = serviceDuration(service);
-  return `${service?.nombre || "Servicio"} · ${durationText(duration.tipo, duration.cantidad)}`;
+  return service?.nombre || "Servicio";
 }
 
 function inventoryServiceLabel(service) {
-  const duration = serviceDuration(service);
-  return `${service?.nombre || "Servicio"} x${durationText(duration.tipo, duration.cantidad)}`;
+  return service?.nombre || "Servicio";
 }
 
 function deliveryTypeLabel(type) {
@@ -140,8 +138,7 @@ function isCapcutService(service) {
 }
 
 function withPurchaseThanks(message) {
-  const smile = String.fromCodePoint(0x1F601);
-  return `${String(message || "").trimEnd()}\n\nGracias por tu compra y confianza ${smile}`;
+  return `${String(message || "").trim()}\n\nGracias por tu compra y confianza`;
 }
 
 function inventoryDurationText(item) {
@@ -197,8 +194,8 @@ function whatsappNumber(value) {
 function whatsappUrl(number, message) {
   const cleanNumber = whatsappNumber(number);
   if (!cleanNumber) return "";
-  const safeText = String(message || "").normalize("NFC");
-  return `https://wa.me/${cleanNumber}?text=${encodeURIComponent(safeText)}`;
+
+  return `https://wa.me/${cleanNumber}`;
 }
 
 function daysTone(days) {
@@ -241,11 +238,23 @@ export default function Admin() {
   const [showClientMatches, setShowClientMatches] = useState(false);
   const [serviceQuery, setServiceQuery] = useState("");
   const [showServiceMatches, setShowServiceMatches] = useState(false);
+  const [stockSearch, setStockSearch] = useState("");
+  const [streamSearch, setStreamSearch] = useState("");
+const [streamFilter, setStreamFilter] = useState("todos");
+const [providerSearch, setProviderSearch] = useState("");
   const [clientListQuery, setClientListQuery] = useState("");
+  const [activeSearch, setActiveSearch] = useState("");
+const [expiredSearch, setExpiredSearch] = useState("");
   const [showClientCreateInline, setShowClientCreateInline] = useState(false);
   const [clientForm, setClientForm] = useState({ nombre: "", username: "", telefono: "", password: "" });
   const [serviceForm, setServiceForm] = useState({ nombre: "", descripcion: "", duracion_tipo: "meses", duracion_cantidad: 1, tipo_entrega: "estandar" });
-  const [subForm, setSubForm] = useState({ cliente_id: "", servicio_id: "", fecha_inicio: todayISO() });
+  const [subForm, setSubForm] = useState({
+  cliente_id: "",
+  servicio_id: "",
+  fecha_inicio: todayISO(),
+  duracion_tipo: "meses",
+  duracion_cantidad: 1
+});
   const [profitValue, setProfitValue] = useState("");
   const [profitTab, setProfitTab] = useState("diaria");
   const [editingClientId, setEditingClientId] = useState("");
@@ -366,7 +375,7 @@ export default function Admin() {
 
   const enrichedSubs = useMemo(() => data.suscripciones.map((s) => {
     const cliente = Array.isArray(s.clientes) ? s.clientes[0] : s.clientes;
-    const servicio = Array.isArray(s.servicios) ? s.servicios[0] : s.servicios;
+    const servicio = Array.isArray(s.servicio) ? s.servicio[0] : s.servicio;
     const days = daysRemaining(s.fecha_vencimiento);
     const expired = Boolean(s.fecha_vencimiento && days !== null && days < 0);
     const active = Boolean(s.activo) && Boolean(servicio?.activo !== false) && !expired;
@@ -380,8 +389,14 @@ export default function Admin() {
   // Solo mostramos vencimientos de hoy hasta 4 días atrás. Al cumplir 5 días
   // vencidos se archivan del panel y se libera cualquier perfil/cupo asignado.
   const expiredSubs = useMemo(() => enrichedSubs
-    .filter((s) => Boolean(s.activo) && Boolean(s.servicio?.activo !== false) && s.days !== null && s.days <= 0 && s.days >= -4)
-    .sort((a, b) => (b.days ?? -999999) - (a.days ?? -999999)), [enrichedSubs]);
+  .filter((s) =>
+    s.servicio?.activo !== false &&
+    s.days !== null &&
+    s.days < 0 &&
+    s.days >= -10
+  )
+  .sort((a, b) => (b.days ?? -999999) - (a.days ?? -999999)),
+[enrichedSubs]);
 
   const stats = useMemo(() => ({
     clientes: data.clientes.length,
@@ -551,26 +566,145 @@ export default function Admin() {
     ).slice(0, 8);
   }, [deliveryClientQuery, data.clientes]);
 
-  const deliveryInventoryOptions = useMemo(() => {
-    if (!deliveryForm.servicio_id) return [];
-    return availableInventory.filter((item) => item.servicio_id === deliveryForm.servicio_id);
-  }, [availableInventory, deliveryForm.servicio_id]);
+ const deliveryInventoryOptions = useMemo(() => {
+  if (!selectedDeliveryService) return [];
+
+  const normalize = (text) =>
+    normalizeText(text)
+      .replace(/\b\d+\s*(mes|meses|día|dias|días)\b/g, "")
+      .trim();
+
+  const requestedName = normalize(selectedDeliveryService.nombre);
+
+  const requestedDays = (() => {
+    const tipo = deliveryForm.duracion_tipo;
+    const cantidad = Number(deliveryForm.duracion_cantidad || 1);
+
+    if (tipo === "dias" || tipo === "día" || tipo === "días") {
+      return cantidad;
+    }
+
+    if (tipo === "meses" || tipo === "mes") {
+      return cantidad * 30;
+    }
+
+    return 30;
+  })();
+
+
+  return availableInventory.filter((item) => {
+
+    console.log("CUENTA DURACION:", {
+    id: item.id,
+    servicio_id: item.servicio_id,
+    duracion_tipo: item.duracion_tipo,
+    duracion_cantidad: item.duracion_cantidad,
+    cupos_total: item.cupos_total,
+    estado: item.estado
+  });
+
+    const inventoryService = data.servicios.find(
+      (service) => service.id === item.servicio_id
+    );
+
+    if (!inventoryService) return false;
+
+
+    const inventoryName = normalize(inventoryService.nombre);
+
+    
+
+
+    // Debe coincidir el nombre del servicio
+    if (
+      !inventoryName.includes(requestedName) &&
+      !requestedName.includes(inventoryName)
+    ) {
+      return false;
+    }
+
+
+    // Validar duración de la cuenta
+    const inventoryDays = (() => {
+  const cantidad = Number(item.duracion_cantidad || 1);
+
+  if (
+    item.duracion_tipo === "mes" ||
+    item.duracion_tipo === "meses"
+  ) {
+    return cantidad * 30;
+  }
+
+  if (
+    item.duracion_tipo === "dia" ||
+    item.duracion_tipo === "dias" ||
+    item.duracion_tipo === "días"
+  ) {
+    return cantidad;
+  }
+
+  return 0;
+})();
+
+console.log("COMPARANDO:", {
+  pedido: requestedName,
+  inventario: inventoryName,
+  duracionCuenta: inventoryDays,
+  duracionSolicitada: requestedDays,
+  cupos: item.cupos_total
+});
+
+console.log("COMPARANDO INVENTARIO:", {
+  servicioPedido: requestedName,
+  servicioCuenta: inventoryName,
+  diasCuenta: inventoryDays,
+  diasSolicitados: requestedDays,
+  cupos: item.cupos_total,
+  idCuenta: item.id
+});
+
+    // acepta hasta 4 días menos de margen
+    if (inventoryDays + 4 < requestedDays) {
+      return false;
+    }
+
+
+    return true;
+
+  });
+
+}, [
+  availableInventory,
+  selectedDeliveryService,
+  deliveryForm.duracion_tipo,
+  deliveryForm.duracion_cantidad,
+  data.servicios
+]);
 
   const selectedInventoryItem = useMemo(
     () => (data.inventario || []).find((item) => item.id === deliveryForm.inventario_id) || null,
     [data.inventario, deliveryForm.inventario_id]
   );
 
-  const selectedInventoryService = useMemo(() => {
-    if (!selectedInventoryItem) return null;
-    return data.servicios.find((service) => service.id === selectedInventoryItem.servicio_id) || null;
-  }, [selectedInventoryItem, data.servicios]);
-
   const inventoryByService = useMemo(() => {
-    const counts = {};
-    for (const item of availableInventory) counts[item.servicio_id] = (counts[item.servicio_id] || 0) + (Number(item.cupos_total || 1) - (assignmentCountByInventory[item.id] || 0));
-    return counts;
-  }, [availableInventory, assignmentCountByInventory]);
+  const counts = {};
+
+  for (const item of availableInventory) {
+    const service = data.servicios.find(
+      (s) => s.id === item.servicio_id
+    );
+
+    if (!service) continue;
+
+    const key = service.nombre.trim().toLowerCase();
+
+    counts[key] = (counts[key] || 0) + 
+      (item.cupos_total || 0) - 
+      (assignmentCountByInventory[item.id] || 0);
+  }
+
+  return counts;
+}, [availableInventory, assignmentCountByInventory, data.servicios]);
 
   const deliveryServiceMatches = useMemo(() => {
     const q = normalizeText(deliveryServiceQuery);
@@ -732,18 +866,24 @@ export default function Admin() {
   }
 
   function selectDeliveryService(service) {
-    setDeliveryServiceQuery(inventoryServiceLabel(service));
-    setShowDeliveryServiceMatches(false);
-    setDeliveryForm((prev) => ({
-      ...prev,
-      servicio_id: service.id,
-      cliente_id: "",
-      inventario_id: "",
-      cupo_numero: "",
-      correo_cliente: ""
-    }));
-    setDeliveryClientQuery("");
-  }
+    console.log("SERVICIO ELEGIDO FINAL:", service);
+  setDeliveryServiceQuery(inventoryServiceLabel(service));
+  
+  setShowDeliveryServiceMatches(false);
+
+  setDeliveryForm((prev) => ({
+    ...prev,
+    servicio_id: service.id,
+    cliente_id: "",
+    inventario_id: "",
+    cupo_numero: "",
+    correo_cliente: "",
+    duracion_tipo: service.duracion_tipo || "meses",
+    duracion_cantidad: Number(service.duracion_cantidad || 1)
+  }));
+
+  setDeliveryClientQuery("");
+}
 
   function chooseDeliveryClientFromText(value) {
     setDeliveryClientQuery(value);
@@ -1005,19 +1145,23 @@ ${cliente}`);
     const profilePin = item.perfiles_pins?.[String(cupo)] || item.pin || "";
     const pinLine = profilePin ? `\nPIN: ${profilePin}` : "";
     const profileLine = cupo ? `\nPERFIL ${cupo}` : "";
-    const notes = item.notas ? `\n\n${item.notas}` : "";
+    const notes = "";
     return withPurchaseThanks(`${service?.nombre || "Servicio"} x${durationLabel} (${purchaseDate})${providerTag}
 
 CORREO: ${item.correo || ""}
 CLAVE: ${item.clave || ""}${profileLine}${pinLine}
 
 ¡IMPORTANTE!
-• ${String.fromCodePoint(0x26A0, 0xFE0F)} Uso apropiado
-${String.fromCodePoint(0x274C)} No cambiar nombres
-${String.fromCodePoint(0x274C)} No usarla en más de 1 dispositivo a la vez
-${String.fromCodePoint(0x274C)} Prohibido compartir la pantalla con otras personas
 
-${String.fromCodePoint(0x1F6AB)}Si viola alguna de las reglas, la pantalla quedará suspendida.${String.fromCodePoint(0x1F6AB)}${notes}
+⚠️ Uso apropiado
+
+❌ No cambiar nombres
+
+❌ No usarla en más de 1 dispositivo a la vez
+
+❌ Prohibido compartir la pantalla con otras personas
+
+🚫 Si viola alguna de las reglas, la pantalla quedará suspendida. 🚫
 
 ${cliente}`);
   }
@@ -1068,7 +1212,7 @@ Disculpa las molestias ${String.fromCodePoint(0x1F64F, 0x1F3FE)}`);
       setError("Esa cuenta ya no tiene cupos disponibles.");
       return;
     }
-    if (effectiveDeliveryType(selectedInventoryService) === "gemini" && !String(deliveryForm.correo_cliente || "").trim()) {
+    if (effectiveDeliveryType(selectedService) === "gemini" && !String(deliveryForm.correo_cliente || "").trim()) {
       setError("Para Gemini escribe el correo Gmail que te proporcionó el cliente.");
       return;
     }
@@ -1086,7 +1230,9 @@ Disculpa las molestias ${String.fromCodePoint(0x1F64F, 0x1F3FE)}`);
   cupo_numero: chosenSlot,
   correo_cliente: deliveryForm.correo_cliente,
   ganancia_neta: Number(profitValue || 0),
-  fecha_ganancia: deliveryForm.fecha_inicio || todayISO()
+  fecha_ganancia: deliveryForm.fecha_inicio || todayISO(),
+ duracion_tipo: selectedDeliveryService.duracion_tipo,
+duracion_cantidad: selectedDeliveryService.duracion_cantidad
 })
       });
 
@@ -1095,19 +1241,32 @@ Disculpa las molestias ${String.fromCodePoint(0x1F64F, 0x1F3FE)}`);
         cliente_id: selectedDeliveryClient.id,
         servicio_id: selectedDeliveryService.id,
         fecha_inicio: result.suscripcion?.fecha_inicio || deliveryForm.fecha_inicio || todayISO(),
-        fecha_vencimiento: result.suscripcion?.fecha_vencimiento || addDuration(deliveryForm.fecha_inicio || todayISO(), selectedInventoryItem.duracion_tipo || "dias", selectedInventoryItem.duracion_cantidad || 1),
+        fecha_vencimiento:
+  addDuration(
+    deliveryForm.fecha_inicio || todayISO(),
+    selectedDeliveryService.duracion_tipo || "meses",
+    Number(selectedDeliveryService.duracion_cantidad || 1)
+  ),
         activo: true,
         cliente: selectedDeliveryClient,
         servicio: selectedDeliveryService
       };
       const generated = {
-        text: buildDeliveryMessage(newSub, selectedInventoryItem, { cupo_numero: chosenSlot, correo_cliente: deliveryForm.correo_cliente, fecha_entrega: todayISO() }),
-        cliente: selectedDeliveryClient,
-        servicio: selectedDeliveryService,
-        cuenta: selectedInventoryItem,
-        asignacion: result.asignacion,
-        suscripcion: result.suscripcion
-      };
+  text: buildDeliveryMessage(newSub, {
+    ...selectedInventoryItem,
+    duracion_tipo: selectedDeliveryService.duracion_tipo,
+    duracion_cantidad: selectedDeliveryService.duracion_cantidad
+  }, {
+    cupo_numero: chosenSlot,
+    correo_cliente: deliveryForm.correo_cliente,
+    fecha_entrega: todayISO()
+  }),
+  cliente: selectedDeliveryClient,
+  servicio: selectedDeliveryService,
+  cuenta: selectedInventoryItem,
+  asignacion: result.asignacion,
+  suscripcion: result.suscripcion
+};
       setGeneratedDelivery(generated);
       setDeliveryForm((prev) => ({ ...prev, servicio_id: "", cliente_id: "", inventario_id: "", cupo_numero: "", correo_cliente: "", fecha_inicio: todayISO() }));
       setSubForm({ cliente_id: "", servicio_id: "", fecha_inicio: todayISO() });
@@ -1472,6 +1631,8 @@ Disculpa las molestias ${String.fromCodePoint(0x1F64F, 0x1F3FE)}`);
   }
 
   async function renewSubscription(s) {
+
+    console.log("RENOVANDO SUSCRIPCIÓN:", s);
     const draft = getRenewalDraft(s.id);
     const max = draft.tipo === "dias" ? 30 : draft.tipo === "meses" ? 12 : 1;
     const rawQty = draft.tipo === "anios" ? 1 : Number(draft.cantidad);
@@ -1479,10 +1640,28 @@ Disculpa las molestias ${String.fromCodePoint(0x1F64F, 0x1F3FE)}`);
       setError(`Escribe una cantidad entre 1 y ${max}.`);
       return;
     }
-    const base = s.fecha_vencimiento && s.fecha_vencimiento >= todayISO() ? s.fecha_vencimiento : todayISO();
-    const fecha_vencimiento = addDuration(base, draft.tipo, rawQty);
+    const fecha_inicio = todayISO();
+const fecha_vencimiento = addDuration(fecha_inicio, draft.tipo, rawQty);
+console.log("DATOS QUE ENVIO:", {
+  id: s.id,
+  fecha_inicio,
+  fecha_vencimiento,
+  activo: true,
+  reporte_vencimiento: false,
+  fecha_reporte: null,
+  es_renovacion: true
+});
     await runAction(
-      () => api("/api/admin/suscripciones", { method: "PATCH", body: JSON.stringify({ id: s.id, fecha_vencimiento, activo: true }) }),
+      
+      () => api("/api/admin/suscripciones", { method: "PATCH", body: JSON.stringify({ 
+  id: s.id,
+  fecha_inicio,
+  fecha_vencimiento,
+  activo: true,
+  reporte_vencimiento: false,
+  fecha_reporte: null,
+  es_renovacion: true
+}) }),
       `Renovada hasta ${formatDate(fecha_vencimiento)}.`
     );
     setRenewMenuId("");
@@ -1547,7 +1726,9 @@ Disculpa las molestias ${String.fromCodePoint(0x1F64F, 0x1F3FE)}`);
     }));
     setOrderSource(hasStock ? "stock" : "external");
     setExternalOrderForm({ proveedor_id: "", correo: "", clave: "", perfil: 1, pin: "" });
-    setServiceQuery(serviceLabel(service));
+    setServiceQuery(
+  `${serviceLabel(service)} - ${durationText(serviceDuration(service).tipo, serviceDuration(service).cantidad)}`
+);
     setShowServiceMatches(false);
     setGeneratedDelivery(null);
   }
@@ -1803,6 +1984,7 @@ Disculpa las molestias ${String.fromCodePoint(0x1F64F, 0x1F3FE)}`);
                   const wa = whatsappHref(s);
                   const assignment = activeAssignmentBySubscription[s.id];
                   const editing = editingSubscriptionId === s.id;
+                  console.log("SUSCRIPCION TABLA:", s);
                   return (
                     <tr key={s.id} className={editing ? "subscriptionEditRow" : ""}>
                       {deleteMode["suscripciones"] && (
@@ -1810,10 +1992,12 @@ Disculpa las molestias ${String.fromCodePoint(0x1F64F, 0x1F3FE)}`);
                       ) }
                       <td><strong>{s.cliente?.nombre || "Cliente"}</strong>{s.cliente?.username && <small>@{s.cliente.username}</small>}</td>
                       <td>{editing ? (
-                        <select value={subscriptionEditForm.servicio_id} onChange={(e) => setSubscriptionEditForm((prev) => ({ ...prev, servicio_id: e.target.value }))}>
-                          {data.servicios.filter((service) => service.activo !== false).map((service) => <option key={service.id} value={service.id}>{serviceLabel(service)}</option>)}
-                        </select>
-                      ) : serviceLabel(s.servicio)}</td>
+  <select value={subscriptionEditForm.servicio_id} onChange={(e) => setSubscriptionEditForm((prev) => ({ ...prev, servicio_id: e.target.value }))}>
+    {data.servicios.filter((service) => service.activo !== false).map((service) => (
+      <option key={service.id} value={service.id}>{serviceLabel(service)}</option>
+    ))}
+  </select>
+) : s.servicio?.nombre || "Servicio"}</td>
                       <td>{editing && assignment ? (
                         <input className="smallNumberInput" type="number" min="1" inputMode="numeric" value={subscriptionEditForm.cupo_numero} onChange={(e) => setSubscriptionEditForm((prev) => ({ ...prev, cupo_numero: e.target.value }))} />
                       ) : assignment ? `${effectiveDeliveryType(s.servicio) === "estandar" ? "Perfil" : "Cupo"} ${assignment.cupo_numero}` : "—"}</td>
@@ -1825,8 +2009,11 @@ Disculpa las molestias ${String.fromCodePoint(0x1F64F, 0x1F3FE)}`);
   <button
     className="waTableButton"
     onClick={async () => {
-  window.open(wa, "_blank");
-  await marcarReportada(s.id);
+      window.open(wa, "_blank");
+
+      if (s.days !== null && s.days < 0) {
+        await marcarReportada(s.id);
+      }
     }}
   >
     WhatsApp
@@ -1872,22 +2059,30 @@ Disculpa las molestias ${String.fromCodePoint(0x1F64F, 0x1F3FE)}`);
   }
 
   function renderPedido() {
-    const orderInventoryOptions = selectedService
-      ? availableInventory.filter((item) => item.servicio_id === selectedService.id)
-      : [];
+    const orderInventoryOptions = deliveryInventoryOptions;
     const orderUsesInventory = Boolean(selectedService && orderSource === "stock" && orderInventoryOptions.length > 0);
     const orderUsesExternal = Boolean(selectedService && orderSource === "external");
     const orderSlots = availableSlots(selectedInventoryItem);
-    const orderExpiry = orderUsesInventory && selectedInventoryItem
-      ? addDuration(
-          subForm.fecha_inicio || todayISO(),
-          selectedInventoryItem.duracion_tipo || "dias",
-          selectedInventoryItem.duracion_cantidad || 1
-        )
-      : calculatedExpiry;
+    console.log("FECHA FINAL STOCK:", {
+  servicio: selectedService?.nombre,
+  tipoServicio: selectedService?.duracion_tipo,
+  cantidadServicio: selectedService?.duracion_cantidad,
+  cuenta: selectedInventoryItem?.duracion_tipo,
+  cantidadCuenta: selectedInventoryItem?.duracion_cantidad,
+  inicio: deliveryForm.fecha_inicio
+});
+    const orderExpiry = orderUsesInventory
+  ? addDuration(
+      deliveryForm.fecha_inicio || todayISO(),
+      selectedService?.duracion_tipo || "meses",
+      Number(selectedService?.duracion_cantidad || 1)
+    )
+  : calculatedExpiry;
     const orderWhatsapp = generatedDelivery?.cliente?.telefono
+    
       ? whatsappUrl(generatedDelivery.cliente.telefono, generatedDelivery.text)
       : "";
+      console.log("MENSAJE WHATSAPP:", generatedDelivery?.text);
     const selectedType = effectiveDeliveryType(selectedService);
 
     function orderAccountLabel(item) {
@@ -1983,7 +2178,7 @@ Disculpa las molestias ${String.fromCodePoint(0x1F64F, 0x1F3FE)}`);
                   </button>
                 )}
                 <button type="button" className={`orderSourceCard ${orderSource === "external" ? "active" : ""}`} onClick={() => { setOrderSource("external"); setGeneratedDelivery(null); }}>
-                  <b>🔐 Cuenta externa / perfil por fuera</b><span>Ingresa aquí las credenciales compradas individualmente</span>
+                  <b>🔐  / perfil por fuera</b><span>Ingresa aquí las credenciales compradas individualmente</span>
                 </button>
                 <button type="button" className={`orderSourceCard ${orderSource === "order" ? "active" : ""}`} onClick={() => { setOrderSource("order"); setGeneratedDelivery(null); }}>
                   <b>🧾 Solo crear pedido</b><span>Registra el servicio sin credenciales por ahora</span>
@@ -2008,14 +2203,14 @@ Disculpa las molestias ${String.fromCodePoint(0x1F64F, 0x1F3FE)}`);
               </label>
 
               {selectedInventoryItem && (
-                <label>{effectiveDeliveryType(selectedInventoryService) === "estandar" ? "Perfil disponible" : "Cupo disponible"}
+                <label>{effectiveDeliveryType(selectedService) === "estandar" ? "Perfil disponible" : "Cupo disponible"}
                   <select value={deliveryForm.cupo_numero} onChange={(e) => setDeliveryForm((prev) => ({ ...prev, cupo_numero: e.target.value }))}>
-                    {orderSlots.map((slot) => <option key={slot} value={slot}>{effectiveDeliveryType(selectedInventoryService) === "estandar" ? `Perfil ${slot}` : `Cupo ${slot}`}</option>)}
+                    {orderSlots.map((slot) => <option key={slot} value={slot}>{effectiveDeliveryType(selectedService) === "estandar" ? `Perfil ${slot}` : `Cupo ${slot}`}</option>)}
                   </select>
                 </label>
               )}
 
-              {effectiveDeliveryType(selectedInventoryService) === "gemini" && (
+              {effectiveDeliveryType(selectedService) === "gemini" && (
                 <label>Correo Gmail del cliente
                   <input type="email" placeholder="Correo que proporciona el cliente" value={deliveryForm.correo_cliente} onChange={(e) => setDeliveryForm((prev) => ({ ...prev, correo_cliente: e.target.value }))} required />
                 </label>
@@ -2083,7 +2278,16 @@ Disculpa las molestias ${String.fromCodePoint(0x1F64F, 0x1F3FE)}`);
                 <button type="button" className="generatedClose" aria-label="Cerrar mensaje" onClick={() => setGeneratedDelivery(null)}>×</button>
               </div>
               <textarea readOnly value={generatedDelivery.text} />
-              <div className="inlineActions"><button type="button" className="miniButton primaryMini" onClick={copyDeliveryText}>Copiar texto</button>{orderWhatsapp && <a className="waTableButton" href={orderWhatsapp} target="_blank" rel="noreferrer">Enviar por WhatsApp</a>}</div>
+              <div className="inlineActions"><button type="button" className="miniButton primaryMini" onClick={copyDeliveryText}>Copiar texto</button><button
+  type="button"
+  className="waTableButton"
+  onClick={async () => {
+    await navigator.clipboard.writeText(generatedDelivery.text);
+    window.open(orderWhatsapp, "_blank");
+  }}
+>
+  Enviar por WhatsApp
+</button></div>
             </div>
           )}
         </form>
@@ -2098,22 +2302,75 @@ Disculpa las molestias ${String.fromCodePoint(0x1F64F, 0x1F3FE)}`);
   }
 
   function renderActivas() {
-    return (
-      <>
-        <div className="pageHeading"><p className="muted">Cuentas</p><h1>Cuentas activas</h1><p className="pageLead">Solo aparecen cuentas con 1 día o más restante, ordenadas de menor a mayor para que las más próximas a vencer queden arriba.</p></div>
-        {renderAccountsTable(activeSubs, "No hay cuentas activas.")}
-      </>
-    );
-  }
 
+const filtered = activeSubs.filter((s) => {
+  const text = `
+    ${s.cliente?.nombre || ""}
+    ${s.cliente?.username || ""}
+    ${s.servicio?.nombre || ""}
+    ${s.cliente?.telefono || ""}
+    ${s.cupo_numero || ""}
+  `.toLowerCase();
+
+  return text.includes(activeSearch.toLowerCase());
+});
+
+return (
+<>
+<div className="pageHeading">
+<p className="muted">Cuentas</p>
+<h1>Cuentas activas</h1>
+<p className="pageLead">
+Solo aparecen cuentas con 1 día o más restante.
+</p>
+
+<input
+className="accountSearch"
+placeholder="🔎 Buscar cliente, servicio o correo..."
+value={activeSearch}
+onChange={(e)=>setActiveSearch(e.target.value)}
+/>
+
+</div>
+
+{renderAccountsTable(filtered, "No hay cuentas activas.")}
+</>
+);
+}
   function renderVencidas() {
-    return (
-      <>
-        <div className="pageHeading"><p className="muted">Alertas</p><h1>Cuentas vencidas</h1><p className="pageLead">Aquí aparecen las cuentas vencidas desde hoy hasta 10 días atrás. Las que superan 10 días vencidas dejan de mostrarse automáticamente, sin borrar al cliente ni su historial.</p></div>
-        {renderAccountsTable(expiredSubs, "No hay cuentas vencidas en los últimos 10 días.")}
-      </>
-    );
-  }
+
+const filtered = expiredSubs.filter((s) => {
+ const text = `
+ ${s.cliente?.nombre || ""}
+ ${s.cliente?.username || ""}
+ ${s.servicio?.nombre || ""}
+ ${s.cliente?.telefono || ""}
+ ${s.cupo_numero || ""}
+ `.toLowerCase();
+
+ return text.includes(expiredSearch.toLowerCase());
+});
+
+
+return (
+<>
+<div className="pageHeading">
+<p className="muted">Alertas</p>
+<h1>Cuentas vencidas</h1>
+
+<input
+className="accountSearch"
+placeholder="🔎 Buscar cuenta vencida..."
+value={expiredSearch}
+onChange={(e)=>setExpiredSearch(e.target.value)}
+/>
+
+</div>
+
+{renderAccountsTable(filtered,"No hay cuentas vencidas.")}
+</>
+);
+}
 
   function renderGanancias() {
     const rows = (data.ganancias || []).filter((item) => item.ganancia_neta !== null && item.ganancia_neta !== undefined && item.ganancia_neta !== "" && Number.isFinite(Number(item.ganancia_neta)));
@@ -2461,6 +2718,7 @@ Disculpa las molestias ${String.fromCodePoint(0x1F64F, 0x1F3FE)}`);
   }
 
   function renderInventario() {
+    
     const deliveryWhatsapp = generatedDelivery?.cliente?.telefono
       ? whatsappUrl(generatedDelivery.cliente.telefono, generatedDelivery.text)
       : "";
@@ -2474,12 +2732,41 @@ Disculpa las molestias ${String.fromCodePoint(0x1F64F, 0x1F3FE)}`);
     const editProfiles = Math.max(1, Number(inventoryEditForm.cupos_total) || 1);
     const replacementProfiles = Math.max(1, Number(replacementAccountForm.cupos_total) || 1);
 
-    const inventoryServices = data.servicios
-      .filter((service) => service.activo && effectiveDeliveryType(service) !== "manual")
-      .slice()
-      .sort((a, b) => String(a.nombre || "").localeCompare(String(b.nombre || ""), "es"));
+    const inventoryServices = Object.values(
+  data.servicios
+    .filter((service) => service.activo && effectiveDeliveryType(service) !== "manual")
+    .reduce((acc, service) => {
+      const key = service.nombre.toLowerCase().trim();
 
-    const activeAssignments = (data.asignaciones || []).filter((assignment) => assignment.activo).map((assignment) => {
+      if (!acc[key]) {
+        acc[key] = service;
+      }
+
+      return acc;
+    }, {})
+).sort((a, b) =>
+  String(a.nombre || "").localeCompare(String(b.nombre || ""), "es")
+);
+      console.log("INVENTORY SERVICES:", inventoryServices);
+
+    const activeAssignments = (data.asignaciones || []).filter((assignment) => {
+  const sub = enrichedSubs.find(
+    (item) => item.id === assignment.suscripcion_id
+  );
+
+  if (!sub) return false;
+
+  if (!sub.fecha_vencimiento) return true;
+
+  const vencimiento = parseISO(sub.fecha_vencimiento);
+  const hoy = parseISO(todayISO());
+
+  const diasVencido = Math.floor(
+    (hoy - vencimiento) / (1000 * 60 * 60 * 24)
+  );
+
+  return diasVencido < 2;
+}).map((assignment) => {
       const sub = enrichedSubs.find((item) => item.id === assignment.suscripcion_id) || null;
       const item = (data.inventario || []).find((account) => account.id === assignment.inventario_id) || null;
       return { ...assignment, sub, item };
@@ -2514,13 +2801,67 @@ Disculpa las molestias ${String.fromCodePoint(0x1F64F, 0x1F3FE)}`);
       return `${access} · ${provider || "Sin proveedor"} · ${Number(item.cupos_total || 1) - used}/${item.cupos_total} libres`;
     }
 
-    function updateProfilePin(setter, form, profile, value) {
-      setter({
-        ...form,
-        perfiles_pins: { ...(form.perfiles_pins || {}), [String(profile)]: value }
-      });
-    }
+  
+function updateProfilePin(setter, form, profile, value) {
+  setter({
+    ...form,
+    perfiles_pins: { ...form.perfiles_pins || {}, [String(profile)]: value }
+  });
+}
 
+
+// PEGA AQUÍ EL FILTRO
+
+const filteredStreamingInventory = streamingInventory.filter((item) => {
+
+  const service = Array.isArray(item.servicios)
+    ? item.servicios[0]
+    : item.servicios;
+
+  const texto = `
+    ${service?.nombre || ""}
+    ${item.correo || ""}
+    ${item.grupo || ""}
+    ${item.estado || ""}
+  `.toLowerCase();
+
+
+  // BUSCADOR
+  if (!texto.includes(streamSearch.toLowerCase())) {
+    return false;
+  }
+
+
+  // FILTRO DISPONIBLES
+  if (streamFilter === "disponible") {
+
+    const usados = activeAssignments.filter(
+      (a) => a.inventario_id === item.id
+    ).length;
+
+    return usados < Number(item.cupos_total || 1);
+  }
+
+
+  // FILTRO OCUPADAS
+  if (streamFilter === "ocupada") {
+
+    const usados = activeAssignments.filter(
+      (a) => a.inventario_id === item.id
+    ).length;
+
+    return usados >= Number(item.cupos_total || 1);
+  }
+
+
+  // FILTRO VENCIDAS
+  if (streamFilter === "vencida") {
+    return item.estado === "vencida" || item.estado === "fallida";
+  }
+
+
+  return true;
+});
     return (
       <>
         <div className="pageHeading">
@@ -2543,10 +2884,27 @@ Disculpa las molestias ${String.fromCodePoint(0x1F64F, 0x1F3FE)}`);
               <input maxLength={8} placeholder="Iniciales (ej. GP)" value={providerForm.iniciales} onChange={(e) => setProviderForm({ iniciales: e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "") })} required />
               <button className="miniButton primaryMini" disabled={working}>Agregar proveedor</button>
             </form>
+
+            <input
+  className="providerSearchInput"
+  placeholder="🔍 Buscar proveedor..."
+  value={providerSearch}
+  onChange={(e) => setProviderSearch(e.target.value)}
+/>
+
             {bulkDeleteBar("proveedores", (data.proveedores || []).filter((provider) => provider.activo !== false).map((provider) => provider.id), "/api/admin/proveedores", "proveedor")}
             <div className="providerList">
               <div className="providerListHead"><span>{deleteMode["proveedores"] ? "Seleccionar / Iniciales" : "Iniciales"}</span><span>Acción</span></div>
-              {(data.proveedores || []).filter((provider) => provider.activo !== false).map((provider) => (
+             
+              
+              {(data.proveedores || [])
+.filter((provider) => provider.activo !== false)
+.filter((provider) =>
+  provider.iniciales
+    .toLowerCase()
+    .includes(providerSearch.toLowerCase())
+)
+.map((provider) => (
                 <div className="providerListRow" key={provider.id}>
                   {deleteMode["proveedores"] ? (
                     <label className="providerSelectLabel"><input type="checkbox" checked={selectedDeleteIds("proveedores").includes(provider.id)} onChange={() => toggleDeleteSelection("proveedores", provider.id)} /><strong>{provider.iniciales}</strong></label>
@@ -2657,15 +3015,43 @@ Disculpa las molestias ${String.fromCodePoint(0x1F64F, 0x1F3FE)}`);
         {inventoryTab === "stock" && (
           <section className="inventoryStockSection inventoryStandalone">
             <div className="sectionTitleRow"><h2>Stock disponible</h2></div>
+            <input
+  className="stockSearchInput"
+  placeholder="🔍 Buscar servicio..."
+  value={stockSearch}
+  onChange={(e) => setStockSearch(e.target.value)}
+/>
+
+
             <div className="stockCards compactStockCards">
-              {inventoryServices.map((service) => (
-                <div className="card stockCard compactStockCard" key={service.id}>
-                  <strong>{inventoryServiceLabel(service)}</strong>
-                  <b>{inventoryByService[service.id] || 0}</b>
-                  <span>disponibles</span>
-                </div>
-              ))}
-            </div>
+  {[...inventoryServices]
+  .filter((service) => {
+    const name = inventoryServiceLabel(service)
+      .toLowerCase()
+      .trim();
+
+    const search = stockSearch
+      .toLowerCase()
+      .trim();
+
+    return name.includes(search);
+  })
+  .sort((a, b) => {
+  const stockA = inventoryByService[a.nombre.trim().toLowerCase()] || 0;
+  const stockB = inventoryByService[b.nombre.trim().toLowerCase()] || 0;
+
+  return stockB - stockA;
+})
+  .map((service) => (
+      <div className="card stockCard compactStockCard" key={service.id}>
+        <strong>{inventoryServiceLabel(service)}</strong>
+        <b>
+ {inventoryByService[service.nombre.trim().toLowerCase()] || 0}
+</b>
+        <span>disponibles</span>
+      </div>
+    ))}
+</div>
           </section>
         )}
 
@@ -2760,7 +3146,49 @@ Disculpa las molestias ${String.fromCodePoint(0x1F64F, 0x1F3FE)}`);
             )}
 
             <section className="inventoryListSection">
-              <div className="sectionTitleRow"><h2>Cuentas Streaming</h2><span>{streamingInventory.length} cuentas / grupos</span></div>
+              <div className="sectionTitleRow"><h2>Cuentas Streaming</h2><span>{filteredStreamingInventory.length} cuentas / grupos</span></div>
+              <div className="streamingSearchBox">
+  <div className="streamingSearchBox">
+  <input
+    className="streamingSearchInput"
+    placeholder="🔍 Buscar cuenta, correo o servicio..."
+    value={streamSearch}
+    onChange={(e) => setStreamSearch(e.target.value)}
+  />
+
+  <div className="streamFilters">
+
+  <button
+    className={streamFilter === "todos" ? "active" : ""}
+    onClick={() => setStreamFilter("todos")}
+  >
+    Todas
+  </button>
+
+  <button
+    className={streamFilter === "disponible" ? "active" : ""}
+    onClick={() => setStreamFilter("disponible")}
+  >
+    Disponibles
+  </button>
+
+  <button
+    className={streamFilter === "ocupada" ? "active" : ""}
+    onClick={() => setStreamFilter("ocupada")}
+  >
+    Ocupadas
+  </button>
+
+  <button
+    className={streamFilter === "vencida" ? "active" : ""}
+    onClick={() => setStreamFilter("vencida")}
+  >
+    Vencidas
+  </button>
+
+</div>
+</div>
+</div>
 
               {editingInventoryId && (
                 <form className="card adminForm inventoryEditPanel" onSubmit={saveInventoryEdit}>
@@ -2788,13 +3216,15 @@ Disculpa las molestias ${String.fromCodePoint(0x1F64F, 0x1F3FE)}`);
                   <div className="inlineActions"><button className="miniButton primaryMini" disabled={working}>Guardar cambios</button><button type="button" className="miniButton" onClick={() => setEditingInventoryId("")}>Cancelar</button></div>
                 </form>
               )}
+              
 
               {streamingInventory.length > 0 && bulkDeleteBar("inventario", streamingInventory.map((item) => item.id), "/api/admin/inventario", "cuenta")}
-              {streamingInventory.length === 0 ? <div className="card emptyState">Aún no hay cuentas cargadas.</div> : (
+              {filteredStreamingInventory.length === 0 ? <div className="card emptyState">Aún no hay cuentas cargadas.</div> : (
                 <div className="card accountsTableCard"><div className="accountsTableScroll"><table className="accountsTable inventoryTable">
                   <thead><tr>{deleteMode["inventario"] && <th className="selectColumn">✓</th>}<th>Servicio</th><th>Proveedor</th><th>Cuenta / grupo</th><th>Vencimiento cuenta</th><th>Días cuenta</th><th>Cupos</th><th>Estado</th><th>Entregas activas</th><th>Acciones</th></tr></thead>
                   <tbody>
-                    {streamingInventory.map((item) => {
+                    {filteredStreamingInventory.map((item) => {
+            
                       const service = Array.isArray(item.servicios) ? item.servicios[0] : item.servicios;
                       const assignments = activeAssignments.filter((assignment) => assignment.inventario_id === item.id);
                       const used = assignments.length;

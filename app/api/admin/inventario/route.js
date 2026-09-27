@@ -223,7 +223,14 @@ export async function PATCH(request) {
     const cupo_numero = Number(body.cupo_numero || 1);
     const correo_cliente = String(body.correo_cliente || "").trim() || null;
     const ganancia_neta = Number(body.ganancia_neta);
-    const fecha_ganancia = String(body.fecha_ganancia || fecha_inicio || "").trim();
+    const fecha_ganancia = String(fecha_inicio || body.fecha_ganancia || "").trim();
+    const duracion_tipo = String(body.duracion_tipo || "dias");
+    const duracion_cantidad = Number(body.duracion_cantidad || 1);
+    console.log("DURACION RECIBIDA BACKEND:", {
+  duracion_tipo,
+  duracion_cantidad,
+  bodyCompleto: body
+});
     if (!cliente_id) return Response.json({ error: "Selecciona un cliente." }, { status: 400 });
     if (!fecha_inicio) return Response.json({ error: "Selecciona la fecha de inicio." }, { status: 400 });
     if (!Number.isFinite(ganancia_neta) || ganancia_neta < 0) return Response.json({ error: "Escribe una ganancia neta válida para el pedido." }, { status: 400 });
@@ -237,11 +244,17 @@ export async function PATCH(request) {
       return Response.json({ error: "Para Gemini escribe el correo Gmail del cliente." }, { status: 400 });
     }
 
+    console.log("ANTES ADD DURATION:", {
+  fecha_inicio,
+  duracion_tipo,
+  duracion_cantidad
+});
+
     const fecha_vencimiento = addDurationISO(
-      fecha_inicio,
-      validation.item.duracion_tipo || "dias",
-      validation.item.duracion_cantidad || 1
-    );
+          fecha_inicio,
+          duracion_tipo,
+          duracion_cantidad
+);
 
     const { data: subscription, error: subscriptionError } = await auth.supabase
       .from("suscripciones")
