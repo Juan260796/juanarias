@@ -195,7 +195,7 @@ function whatsappUrl(number, message) {
   const cleanNumber = whatsappNumber(number);
   if (!cleanNumber) return "";
 
-  return `https://wa.me/${cleanNumber}`;
+  return `https://wa.me/${cleanNumber}?text=${encodeURIComponent(message || "")}`;
 }
 
 function daysTone(days) {
@@ -1927,19 +1927,32 @@ console.log("DATOS QUE ENVIO:", {
   function whatsappHref(s) {
     const number = whatsappNumber(s.cliente?.telefono);
     if (!number) return "";
+
     const cliente = s.cliente?.nombre || s.cliente?.username || "cliente";
     const servicio = s.servicio?.nombre || "servicio";
-    let message = `Holaa ${cliente} \u{1F60A}`;
 
-    if (s.days !== null && s.days <= 0) {
-      message = `Hola ${cliente}, tu servicio ${servicio} ya venció, deseas renovarlo? Estoy atento a tu solicitud`;
-    } else if (s.days !== null && s.days >= 1 && s.days <= 3) {
+    let message = `Holaa ${cliente} 😊`;
+
+    // CUENTA VENCIDA
+    if (s.days !== null && s.days < 0) {
+      const dias = Math.abs(s.days);
+
+      message =
+        `Hola ${cliente}, tu servicio ${servicio} se encuentra vencido hace ${dias} día(s). ` +
+        `¿Deseas renovarlo? Estoy atento a tu solicitud 😊`;
+    }
+
+    // VENCE PRONTO
+    else if (s.days !== null && s.days >= 1 && s.days <= 3) {
       const unit = s.days === 1 ? "día" : "días";
-      message = `Holaa ${cliente}, tu servicio ${servicio} vence en ${s.days} ${unit}, si deseas renovarlo, Estoy atento a tu solicitud \u{1F60A}`;
+
+      message =
+        `Holaa ${cliente} 😊, tu servicio ${servicio} vence en ${s.days} ${unit}. ` +
+        `Si deseas renovarlo, estoy atento a tu solicitud.`;
     }
 
     return whatsappUrl(number, message);
-  }
+}
 
   function clientWhatsappHref(cliente) {
     const number = whatsappNumber(cliente?.telefono);
@@ -2007,18 +2020,19 @@ console.log("DATOS QUE ENVIO:", {
                       <td><span className={`daysBadge ${daysTone(s.days)}`}>{remainingText(s.days)}</span></td>
                       <td>{wa ? (
   <button
-    className="waTableButton"
-    onClick={async () => {
-      window.open(wa, "_blank");
+  className="waTableButton"
+  onClick={async () => {
 
-      if (s.days !== null && s.days < 0) {
-        await marcarReportada(s.id);
-      }
-    }}
-  >
-    WhatsApp
-  </button>
+    if (s.days !== null && s.days < 0 && !s.reporte_vencimiento) {
+      await marcarReportada(s.id);
+    }
 
+    window.open(wa, "_blank");
+
+  }}
+>
+  WhatsApp
+</button>
 ) : (
   <span className="noPhone">Sin WhatsApp</span>
 )}</td>
