@@ -191,10 +191,7 @@ if (
     );
   }
 
-  console.log(
-    "ASIGNACIONES ACTIVAS ANTES DE RENOVAR:",
-    asignacionesActivas
-  );
+  
 
   // Guardamos los inventarios anteriores para recalcularlos después
   const inventariosAnteriores = [
@@ -224,10 +221,7 @@ if (
       );
     }
 
-    console.log(
-      "ASIGNACIONES ANTERIORES LIBERADAS:",
-      ids
-    );
+    
   }
 
   // Verificar que el nuevo perfil esté libre
@@ -290,10 +284,7 @@ if (
     );
   }
 
-  console.log(
-    "NUEVA ASIGNACION CREADA:",
-    nuevaAsignacion
-  );
+  
 
   // Recalcular inventarios anteriores
   for (const inventarioId of inventariosAnteriores) {
@@ -309,9 +300,7 @@ if (
     nuevoInventarioId
   );
 
-  console.log(
-    "RENOVACION DE CUENTA COMPLETADA CORRECTAMENTE"
-  );
+  
 }
 
 // CAMBIO MANUAL DE REPORTE
@@ -405,15 +394,81 @@ if (Object.prototype.hasOwnProperty.call(body, "fecha_reporte")) {
       return Response.json({ error: "Este pedido no tiene una cuenta/perfil asignado para editar." }, { status: 400 });
     }
 
-    const durationType = inventory?.duracion_tipo || service.duracion_tipo || "meses";
-    const durationQty = Number(inventory?.duracion_cantidad || service.duracion_cantidad || 1);
-    const recalculatedExpiry = addDurationISO(nextStart, durationType, durationQty);
-    if (!recalculatedExpiry) return Response.json({ error: "No se pudo recalcular la fecha final." }, { status: 400 });
+    // La duración del PEDIDO es independiente de la duración
+// de la cuenta de inventario.
+//
+// Si solo se está editando el cupo, servicio u otro dato,
+// conservamos la fecha de vencimiento original del pedido.
+// No usamos la duración de inventario para modificarla.
 
-    changes.fecha_inicio = nextStart;
-    changes.servicio_id = nextServiceId;
-    changes.fecha_vencimiento = recalculatedExpiry;
+changes.fecha_inicio = nextStart;
+changes.servicio_id = nextServiceId;
 
+// Solo recalcular la fecha de vencimiento si realmente
+// cambió la fecha de inicio.
+if (nextStart !== current.fecha_inicio) {
+  // Conservar la duración REAL que tiene actualmente el pedido.
+  // NO tomar la duración del servicio ni la del inventario.
+
+  const currentStart = String(current.fecha_inicio || "").trim();
+  const currentEnd = String(current.fecha_vencimiento || "").trim();
+
+  if (!currentStart || !currentEnd) {
+    return Response.json(
+      { error: "El pedido no tiene fechas suficientes para conservar su duración." },
+      { status: 400 }
+    );
+  }
+
+  const currentStartDate = new Date(`${currentStart}T00:00:00`);
+  const currentEndDate = new Date(`${currentEnd}T00:00:00`);
+
+  if (
+    Number.isNaN(currentStartDate.getTime()) ||
+    Number.isNaN(currentEndDate.getTime()) ||
+    currentEndDate <= currentStartDate
+  ) {
+    return Response.json(
+      { error: "Las fechas actuales del pedido no son válidas." },
+      { status: 400 }
+    );
+  }
+
+  // Primero intentamos determinar si la duración actual está expresada en meses.
+  const monthDiff =
+    (currentEndDate.getFullYear() - currentStartDate.getFullYear()) * 12 +
+    (currentEndDate.getMonth() - currentStartDate.getMonth());
+
+  let durationType = "dias";
+  let durationQty = Math.round(
+    (currentEndDate - currentStartDate) / (1000 * 60 * 60 * 24)
+  );
+
+  // Si al sumar esos meses obtenemos exactamente la fecha actual
+  // de vencimiento, conservamos la duración como meses.
+  if (
+    monthDiff >= 1 &&
+    addDurationISO(currentStart, "meses", monthDiff) === currentEnd
+  ) {
+    durationType = "meses";
+    durationQty = monthDiff;
+  }
+
+  const recalculatedExpiry = addDurationISO(
+    nextStart,
+    durationType,
+    durationQty
+  );
+
+  if (!recalculatedExpiry) {
+    return Response.json(
+      { error: "No se pudo recalcular la fecha final." },
+      { status: 400 }
+    );
+  }
+
+  changes.fecha_vencimiento = recalculatedExpiry;
+}
     if (inventory?.etiqueta === "externa") {
       const { error: externalDateError } = await supabase.from("inventario_cuentas").update({
   fecha_carga: nextStart
