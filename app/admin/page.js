@@ -3319,7 +3319,7 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
             {selectedUploadService && inventoryDurationControls(inventoryForm, setInventoryForm, uploadType)}
 
             {selectedUploadService && uploadType === "gemini" ? (
-              <label>Correo del grupo<input placeholder="cpro567809@gmail.com" value={inventoryForm.grupo} onChange={(e) => setInventoryForm({ ...inventoryForm, grupo: e.target.value })} required /></label>
+              <label>Correo del grupo<input placeholder="Correo del grupo" value={inventoryForm.grupo} onChange={(e) => setInventoryForm({ ...inventoryForm, grupo: e.target.value })} required /></label>
             ) : selectedUploadService ? (
               <div className="twoCols">
                 <label>Correo / acceso<input placeholder={uploadType === "chatgpt" ? "c90917058+2207@gmail.com" : "cuenta@correo.com"} value={inventoryForm.correo} onChange={(e) => setInventoryForm({ ...inventoryForm, correo: e.target.value })} required /></label>
@@ -3439,7 +3439,7 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
                 {replacementService && inventoryDurationControls(replacementAccountForm, setReplacementAccountForm, replacementType)}
 
                 {replacementService && replacementType === "gemini" ? (
-                  <label>Correo del grupo<input placeholder="cpro567809@gmail.com" value={replacementAccountForm.grupo} onChange={(e) => setReplacementAccountForm({ ...replacementAccountForm, grupo: e.target.value })} required /></label>
+                  <label>Correo del grupo<input placeholder="Correo del grupo"value={replacementAccountForm.grupo} onChange={(e) => setReplacementAccountForm({ ...replacementAccountForm, grupo: e.target.value })} required /></label>
                 ) : replacementService ? (
                   <div className="twoCols">
                     <label>Correo / acceso<input placeholder={replacementType === "chatgpt" ? "cuenta@gmail.com" : "cuenta@correo.com"} value={replacementAccountForm.correo} onChange={(e) => setReplacementAccountForm({ ...replacementAccountForm, correo: e.target.value })} required /></label>

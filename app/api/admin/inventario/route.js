@@ -20,9 +20,9 @@ function parseInventoryDuration(body, deliveryType) {
   const tipo = String(body.duracion_tipo || (deliveryType === "gemini" ? "meses" : "dias"));
   const cantidad = Number(body.duracion_cantidad || 1);
   const valid = deliveryType === "gemini"
-    ? tipo === "meses" && Number.isInteger(cantidad) && cantidad >= 1 && cantidad <= 12
-    : ((tipo === "dias" && Number.isInteger(cantidad) && cantidad >= 1 && cantidad <= 30) ||
-      (tipo === "meses" && Number.isInteger(cantidad) && cantidad >= 1 && cantidad <= 12));
+  ? tipo === "meses" && Number.isInteger(cantidad) && cantidad >= 1
+  : ((tipo === "dias" && Number.isInteger(cantidad) && cantidad >= 1 && cantidad <= 30) ||
+     (tipo === "meses" && Number.isInteger(cantidad) && cantidad >= 1 && cantidad <= 12));
   return valid ? { tipo, cantidad } : null;
 }
 
@@ -135,7 +135,16 @@ export async function POST(request) {
   if (tipo === "manual") return Response.json({ error: "Los servicios manuales no usan inventario." }, { status: 400 });
 
   const duration = parseInventoryDuration(body, tipo);
-  if (!duration) return Response.json({ error: tipo === "gemini" ? "Gemini permite de 1 a 12 meses." : "Usa de 1 a 30 días o de 1 a 12 meses." }, { status: 400 });
+  if (!duration) {
+  return Response.json(
+    {
+      error: tipo === "gemini"
+        ? "Gemini permite cualquier cantidad de meses mayor a 0."
+        : "Usa entre 1 y 30 días o entre 1 y 12 meses."
+    },
+    { status: 400 }
+  );
+}
 
   const correo = String(body.correo || "").trim() || null;
   const clave = String(body.clave || "").trim() || null;
