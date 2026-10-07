@@ -1755,9 +1755,9 @@ if (cambiarCuenta && (!nuevoInventarioId || !nuevoCupo)) {
 
   async function renewInventoryAccount(item) {
     const draft = getInventoryRenewalDraft(item.id);
-    const max = draft.tipo === "dias" ? 30 : 12;
+    const max = draft.tipo === "dias" ? 30 : undefined;
     const qty = Number(draft.cantidad);
-    if (!Number.isInteger(qty) || qty < 1 || qty > max) {
+    if (!Number.isInteger(qty) || qty < 1 || (max !== undefined && qty > max)) {
       setError(`Escribe una cantidad entre 1 y ${max}.`);
       return;
     }
@@ -1913,7 +1913,7 @@ if (cambiarCuenta && (!nuevoInventarioId || !nuevoCupo)) {
     const tipoEntrega = form.tipo_entrega || "estandar";
     if (tipoEntrega === "manual") return durationControls(form, setter, prefix);
     const tipo = tipoEntrega === "gemini" ? "meses" : (form.duracion_tipo === "dias" ? "dias" : "meses");
-    const max = tipo === "dias" ? 30 : 12;
+    const max = tipo === "dias" ? 30 : undefined;
     return (
       <div className="durationControls">
         <label>Tiempo
@@ -2182,7 +2182,7 @@ Cuenta para renovación
 
   function inventoryAccountRenewalDropdown(item) {
     const draft = getInventoryRenewalDraft(item.id);
-    const max = draft.tipo === "dias" ? 30 : 12;
+    const max = draft.tipo === "dias" ? 30 : undefined;
     const isOpen = inventoryRenewMenuId === item.id;
     return (
       <div className="renewMenuWrap inventoryRenewMenu">
@@ -3123,7 +3123,7 @@ onChange={(e)=>setExpiredSearch(e.target.value)}
 
     function inventoryDurationControls(form, setter, type) {
       const durationType = type === "gemini" ? "meses" : (form.duracion_tipo === "meses" ? "meses" : "dias");
-      const max = durationType === "dias" ? 30 : 12;
+      const max = durationType === "dias" ? 30 : undefined;
       return (
         <div className="durationControls">
           <label>Tiempo
@@ -3134,10 +3134,19 @@ onChange={(e)=>setExpiredSearch(e.target.value)}
           </label>
           <label>Cantidad
             <input type="number" min="1" max={max} inputMode="numeric" value={form.duracion_cantidad} onChange={(e) => setter({ ...form, duracion_tipo: durationType, duracion_cantidad: e.target.value })} onBlur={() => {
-              const parsed = Number(form.duracion_cantidad);
-              const fixed = Number.isInteger(parsed) && parsed >= 1 ? Math.min(parsed, max) : 1;
-              setter({ ...form, duracion_tipo: durationType, duracion_cantidad: fixed });
-            }} required />
+  const parsed = Number(form.duracion_cantidad);
+
+  const fixed =
+    Number.isInteger(parsed) && parsed >= 1
+      ? (max === undefined ? parsed : Math.min(parsed, max))
+      : 1;
+
+  setter({
+    ...form,
+    duracion_tipo: durationType,
+    duracion_cantidad: fixed
+  });
+}}required />
           </label>
         </div>
       );
@@ -3605,7 +3614,7 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
     <input
       type="number"
       min="1"
-      max={inventoryEditForm.duracion_tipo === "dias" ? 30 : 12}
+      max={inventoryForm.duracion_tipo === "dias" ? 30 : undefined}
       value={inventoryEditForm.duracion_cantidad ?? ""}
       onChange={(e) =>
         setInventoryEditForm({
@@ -3618,7 +3627,7 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
 
 </div>
                   <div className="twoCols"><input placeholder="Correo / acceso" value={inventoryEditForm.correo || ""} onChange={(e) => setInventoryEditForm({ ...inventoryEditForm, correo: e.target.value })} /><input placeholder="Grupo (Gemini)" value={inventoryEditForm.grupo || ""} onChange={(e) => setInventoryEditForm({ ...inventoryEditForm, grupo: e.target.value })} /></div>
-                  <div className="twoCols"><input placeholder="Clave" value={inventoryEditForm.clave || ""} onChange={(e) => setInventoryEditForm({ ...inventoryEditForm, clave: e.target.value })} /><label>Cantidad de tiempo<input type="number" min="1" max={inventoryEditForm.duracion_tipo === "dias" ? 30 : 12} value={inventoryEditForm.duracion_cantidad || 1} onChange={(e) => setInventoryEditForm({ ...inventoryEditForm, duracion_cantidad: e.target.value })} /></label></div>
+                  <div className="twoCols"><input placeholder="Clave" value={inventoryEditForm.clave || ""} onChange={(e) => setInventoryEditForm({ ...inventoryEditForm, clave: e.target.value })} /><label>Cantidad de tiempo<input type="number" min="1" max={inventoryEditForm.duracion_tipo === "dias" ? 30 : undefined} value={inventoryEditForm.duracion_cantidad || 1} onChange={(e) => setInventoryEditForm({ ...inventoryEditForm, duracion_cantidad: e.target.value })} /></label></div>
                   <label>Cupos / perfiles<input type="number" min="1" max="50" value={inventoryEditForm.cupos_total || 1} onChange={(e) => setInventoryEditForm({ ...inventoryEditForm, cupos_total: e.target.value })} /></label>
                   {editType === "estandar" && (
                     <div className="profilePinsBox">

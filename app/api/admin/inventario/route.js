@@ -187,12 +187,24 @@ export async function PATCH(request) {
 
   if (action === "renovar_cuenta") {
     const tipo = String(body.tipo || "meses");
-    const cantidad = Number(body.cantidad || 1);
-    const max = tipo === "dias" ? 30 : tipo === "meses" ? 12 : 0;
-    if (!max || !Number.isInteger(cantidad) || cantidad < 1 || cantidad > max) {
-      return Response.json({ error: tipo === "dias" ? "Usa entre 1 y 30 días." : "Usa entre 1 y 12 meses." }, { status: 400 });
-    }
+const cantidad = Number(body.cantidad || 1);
+const max = tipo === "dias" ? 30 : null;
 
+if (
+  !Number.isInteger(cantidad) ||
+  cantidad < 1 ||
+  (max !== null && cantidad > max)
+) {
+  return Response.json(
+    {
+      error:
+        tipo === "dias"
+          ? "Usa entre 1 y 30 días."
+          : "La cantidad de meses debe ser un número entero mayor a 0."
+    },
+    { status: 400 }
+  );
+}
     const { data: current, error: currentError } = await auth.supabase
       .from("inventario_cuentas")
       .select("id,fecha_vencimiento,estado")
@@ -461,6 +473,7 @@ const changes = {
   for (const key of ["correo", "clave", "pin", "grupo", "notas", "fecha_carga"]) {
     if (Object.prototype.hasOwnProperty.call(body, key)) changes[key] = String(body[key] || "").trim() || null;
   }
+  
   if (body.servicio_id) changes.servicio_id = String(body.servicio_id);
   if (body.proveedor_id) changes.proveedor_id = String(body.proveedor_id);
   if (Object.prototype.hasOwnProperty.call(body, "cupos_total")) {
