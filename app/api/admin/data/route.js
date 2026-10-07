@@ -250,7 +250,7 @@ let suscripcionesRes = await supabase
   const managedInventoryHistory = inventoryHistory.filter((item) => item.etiqueta !== "externa");
   const visibleInventory = managedInventoryHistory.filter((item) => item.estado !== "reemplazada");
 
-  console.log("ANTES DE ENVIAR SUSCRIPCIONES:", visibleSubscriptions);
+  
   
   return Response.json({
     clientes: clientesRes.data || [],

@@ -79,7 +79,11 @@ export async function PATCH(request) {
   const auth = await requireAdmin(request);
   if (auth.response) return auth.response;
 const { supabase } = auth;
-  const body = await request.json().catch(() => ({}));
+
+const body = await request.json().catch(() => ({}));
+
+
+
 const id = String(body.id || "");
 const action = String(body.action || "");
 
@@ -88,7 +92,7 @@ if (!id) return Response.json({ error: "Falta el ID de la suscripción." }, { st
 
 if (action === "marcar_reportada") {
 
-console.log("ENTRÓ MARCAR REPORTADA", id);
+
 
   const { data, error } = await supabase
     .from("suscripciones")
@@ -101,7 +105,7 @@ console.log("ENTRÓ MARCAR REPORTADA", id);
     .single();
 
   if (error) {
-  console.log("ERROR SUPABASE:", error);
+  
   return Response.json(
     { error: error.message },
     { status: 400 }
@@ -123,18 +127,203 @@ console.log("ENTRÓ MARCAR REPORTADA", id);
   if (currentError || !current) return Response.json({ error: currentError?.message || "Pedido no encontrado." }, { status: 404 });
 
   const changes = {};
-  console.log("PATCH RENOVACION RECIBIDO:", body);
-  if (typeof body.activo === "boolean") changes.activo = body.activo;
-  if (body.fecha_vencimiento) changes.fecha_vencimiento = String(body.fecha_vencimiento);
-  if (body.fecha_inicio) changes.fecha_inicio = String(body.fecha_inicio);
+
+if (typeof body.activo === "boolean") {
+  changes.activo = body.activo;
+}
+
+if (body.fecha_vencimiento) {
+  changes.fecha_vencimiento = String(body.fecha_vencimiento);
+}
+
+if (body.fecha_inicio) {
+  changes.fecha_inicio = String(body.fecha_inicio);
+}
+
+
+// LIMPIAR REPORTE AL RENOVAR
+if (body.es_renovacion === true) {
+  changes.reporte_vencimiento = false;
+  changes.fecha_reporte = null;
+}
+
+
+// CAMBIO MANUAL DE REPORTE
 if (typeof body.reporte_vencimiento === "boolean") {
   changes.reporte_vencimiento = body.reporte_vencimiento;
 }
 
-if ("fecha_reporte" in body) {
+// LIMPIAR REPORTE AL RENOVAR
+if (body.es_renovacion === true) {
+  changes.reporte_vencimiento = false;
+  changes.fecha_reporte = null;
+}
+
+// CAMBIO DE CUENTA AL RENOVAR
+if (
+  body.es_renovacion === true &&
+  body.cambiar_cuenta === true
+) {
+  const nuevoInventarioId = String(body.nuevo_inventario_id || "");
+  const nuevoCupo = Number(body.nuevo_cupo);
+
+  
+
+  if (!nuevoInventarioId || !Number.isInteger(nuevoCupo)) {
+    return Response.json(
+      { error: "Cuenta nueva y perfil son obligatorios." },
+      { status: 400 }
+    );
+  }
+
+  // Buscar TODAS las asignaciones activas de esta suscripción
+  const { data: asignacionesActivas, error: asignacionesError } =
+    await supabase
+      .from("inventario_asignaciones")
+      .select("*")
+      .eq("suscripcion_id", id)
+      .eq("activo", true);
+
+  if (asignacionesError) {
+    return Response.json(
+      { error: asignacionesError.message },
+      { status: 400 }
+    );
+  }
+
+  console.log(
+    "ASIGNACIONES ACTIVAS ANTES DE RENOVAR:",
+    asignacionesActivas
+  );
+
+  // Guardamos los inventarios anteriores para recalcularlos después
+  const inventariosAnteriores = [
+    ...new Set(
+      (asignacionesActivas || [])
+        .map((a) => a.inventario_id)
+        .filter(Boolean)
+    )
+  ];
+
+  // IMPORTANTE:
+  // Desactivar TODAS las asignaciones activas de esta suscripción
+  if ((asignacionesActivas || []).length > 0) {
+    const ids = asignacionesActivas.map((a) => a.id);
+
+    const { error: liberarError } = await supabase
+      .from("inventario_asignaciones")
+      .update({ activo: false })
+      .in("id", ids);
+
+    if (liberarError) {
+      return Response.json(
+        {
+          error: `No se pudieron liberar las asignaciones anteriores: ${liberarError.message}`
+        },
+        { status: 400 }
+      );
+    }
+
+    console.log(
+      "ASIGNACIONES ANTERIORES LIBERADAS:",
+      ids
+    );
+  }
+
+  // Verificar que el nuevo perfil esté libre
+  const { data: ocupado, error: ocupadoError } = await supabase
+    .from("inventario_asignaciones")
+    .select("id")
+    .eq("inventario_id", nuevoInventarioId)
+    .eq("cupo_numero", nuevoCupo)
+    .eq("activo", true)
+    .maybeSingle();
+
+  if (ocupadoError) {
+    return Response.json(
+      { error: ocupadoError.message },
+      { status: 400 }
+    );
+  }
+
+  if (ocupado) {
+    return Response.json(
+      {
+        error: `El perfil ${nuevoCupo} ya está ocupado.`
+      },
+      { status: 409 }
+    );
+  }
+
+  // Crear UNA SOLA nueva asignación
+  const { data: nuevaAsignacion, error: asignacionError } =
+    await supabase
+      .from("inventario_asignaciones")
+      .insert({
+        inventario_id: nuevoInventarioId,
+        suscripcion_id: id,
+        cliente_id: current.cliente_id,
+        cupo_numero: nuevoCupo,
+        activo: true,
+        es_reemplazo: false,
+        reemplaza_asignacion_id:
+          asignacionesActivas?.[0]?.id || null,
+        fecha_asignacion: new Date().toISOString()
+      })
+      .select("*")
+      .single();
+
+  if (asignacionError) {
+    // Si falla la nueva asignación, restauramos las anteriores
+    if ((asignacionesActivas || []).length > 0) {
+      const ids = asignacionesActivas.map((a) => a.id);
+
+      await supabase
+        .from("inventario_asignaciones")
+        .update({ activo: true })
+        .in("id", ids);
+    }
+
+    return Response.json(
+      { error: asignacionError.message },
+      { status: 400 }
+    );
+  }
+
+  console.log(
+    "NUEVA ASIGNACION CREADA:",
+    nuevaAsignacion
+  );
+
+  // Recalcular inventarios anteriores
+  for (const inventarioId of inventariosAnteriores) {
+    await recalcInventoryState(
+      supabase,
+      inventarioId
+    );
+  }
+
+  // Recalcular inventario nuevo
+  await recalcInventoryState(
+    supabase,
+    nuevoInventarioId
+  );
+
+  console.log(
+    "RENOVACION DE CUENTA COMPLETADA CORRECTAMENTE"
+  );
+}
+
+// CAMBIO MANUAL DE REPORTE
+if (typeof body.reporte_vencimiento === "boolean") {
+  changes.reporte_vencimiento = body.reporte_vencimiento;
+}
+
+// SOLO ACTUALIZAR FECHA REPORTE SI VIENE EXPLICITAMENTE
+if (Object.prototype.hasOwnProperty.call(body, "fecha_reporte")) {
   changes.fecha_reporte = body.fecha_reporte;
 }
-console.log("CAMBIOS A GUARDAR:", changes);
+
 
   const wantsEditableFields = Boolean(
   (body.fecha_inicio || body.servicio_id || Object.prototype.hasOwnProperty.call(body, "cupo_numero"))
@@ -236,8 +425,8 @@ console.log("CAMBIOS A GUARDAR:", changes);
   if (Object.keys(changes).length === 0) {
     return Response.json({ error: "No hay cambios para guardar." }, { status: 400 });
   }
-console.log("CAMBIOS FINALES GUARDAR:", changes);
-  console.log("CAMBIOS FINALES GUARDAR:", changes);
+
+
 
 const { data: updated, error } = await supabase
   .from("suscripciones")
@@ -246,10 +435,10 @@ const { data: updated, error } = await supabase
   .select("*")
   .single();
 
-console.log("RESULTADO UPDATE:", updated);
+
 
 if (error) {
-  console.log("ERROR UPDATE:", error);
+  
   return Response.json({ error: error.message }, { status: 400 });
 }
 

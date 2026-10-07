@@ -603,3 +603,73 @@ color:#7e93ad;
 .accountSearch:focus{
 box-shadow:0 0 0 3px rgba(0,132,255,.25);
 }
+
+.credentialsDetails {
+  position: relative;
+  min-width: 150px;
+}
+
+.credentialsDetails summary {
+  cursor: pointer;
+  list-style: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 11px;
+  border-radius: 8px;
+  background: rgba(30, 144, 255, 0.10);
+  border: 1px solid rgba(30, 144, 255, 0.20);
+  color: #4da3ff;
+  font-weight: 600;
+  font-size: 13px;
+  transition: all 0.2s ease;
+}
+
+.credentialsDetails summary::-webkit-details-marker {
+  display: none;
+}
+
+.credentialsDetails summary:hover {
+  background: rgba(30, 144, 255, 0.18);
+  border-color: rgba(30, 144, 255, 0.35);
+}
+
+.credentialsDetails[open] summary {
+  margin-bottom: 8px;
+}
+
+.credentialsPanel {
+  width: 220px;
+  padding: 12px;
+  border-radius: 10px;
+  background: #101c2d;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  box-shadow: 0 8px 25px rgba(0, 0, 0, 0.30);
+}
+
+.credentialsPanel > div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.credentialsPanel > div:last-child {
+  border-bottom: none;
+  padding-bottom: 2px;
+}
+
+.credentialsPanel strong {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  color: #7f91a8;
+}
+
+.credentialsPanel span {
+  font-size: 13px;
+  font-weight: 600;
+  color: #f1f5f9;
+  word-break: break-word;
+}

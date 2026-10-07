@@ -263,6 +263,10 @@ const [expiredSearch, setExpiredSearch] = useState("");
   const [serviceEditForm, setServiceEditForm] = useState({ nombre: "", descripcion: "", activo: true, duracion_tipo: "meses", duracion_cantidad: 1, tipo_entrega: "estandar" });
   const [renewalDrafts, setRenewalDrafts] = useState({});
   const [renewMenuId, setRenewMenuId] = useState("");
+  const [renewAccountMode, setRenewAccountMode] = useState({});
+  const [renewSelectedInventory,setRenewSelectedInventory] = useState({});
+  const [renewSelectedSlot, setRenewSelectedSlot] = useState({});
+  const [renewSameAccountSlot, setRenewSameAccountSlot] = useState({});
   const [inventoryRenewalDrafts, setInventoryRenewalDrafts] = useState({});
   const [inventoryRenewMenuId, setInventoryRenewMenuId] = useState("");
   const [promoForm, setPromoForm] = useState({ titulo: "", descripcion: "", precio: "", fecha_inicio: todayISO(), fecha_fin: todayISO(), activo: true });
@@ -288,6 +292,7 @@ const [expiredSearch, setExpiredSearch] = useState("");
   const [subscriptionEditForm, setSubscriptionEditForm] = useState({ fecha_inicio: "", servicio_id: "", cupo_numero: "" });
   const [deleteSelection, setDeleteSelection] = useState({ suscripciones: [], clientes: [], servicios: [], promociones: [], proveedores: [], inventario: [] });
   const [deleteMode, setDeleteMode] = useState({});
+  const [showCredentialsId, setShowCredentialsId] = useState("");
 
   const api = useCallback(async (path, options = {}, accessToken = token) => {
     const res = await fetch(path, {
@@ -305,7 +310,7 @@ const [expiredSearch, setExpiredSearch] = useState("");
 
   async function marcarReportada(id) {
   try {
-    console.log("Marcando reportada ID:", id);
+    
 
     await api("/api/admin/suscripciones", {
       method: "PATCH",
@@ -438,17 +443,47 @@ const [expiredSearch, setExpiredSearch] = useState("");
   }, [serviceQuery, data.servicios]);
 
   const inventoryUploadServiceMatches = useMemo(() => {
-    const q = normalizeText(inventoryServiceQuery);
-    const source = data.servicios
-      .filter((service) => service.activo && effectiveDeliveryType(service) !== "manual")
-      .slice()
-      .sort((a, b) => String(a.nombre || "").localeCompare(String(b.nombre || ""), "es"));
-    if (!q) return source.slice(0, 8);
-    return source.filter((service) =>
-      normalizeText(`${service.nombre || ""} ${inventoryServiceLabel(service)} ${service.descripcion || ""}`).includes(q)
-    ).slice(0, 8);
-  }, [inventoryServiceQuery, data.servicios]);
+  const q = normalizeText(inventoryServiceQuery);
 
+  const source = data.servicios
+    .filter(
+      (service) =>
+        service.activo &&
+        effectiveDeliveryType(service) !== "manual"
+    )
+    .slice()
+    .sort((a, b) =>
+      String(a.nombre || "").localeCompare(
+        String(b.nombre || ""),
+        "es"
+      )
+    );
+
+  // Quitar servicios duplicados por nombre
+  const uniqueServices = [];
+  const seenNames = new Set();
+
+  for (const service of source) {
+    const key = normalizeText(service.nombre || "");
+
+    if (seenNames.has(key)) continue;
+
+    seenNames.add(key);
+    uniqueServices.push(service);
+  }
+
+  if (!q) {
+    return uniqueServices.slice(0, 8);
+  }
+
+  return uniqueServices
+    .filter((service) =>
+      normalizeText(
+        `${service.nombre || ""} ${inventoryServiceLabel(service)} ${service.descripcion || ""}`
+      ).includes(q)
+    )
+    .slice(0, 8);
+}, [inventoryServiceQuery, data.servicios]);
   const clientOrderCounts = useMemo(() => {
     if (data.order_counts && Object.keys(data.order_counts).length > 0) return data.order_counts;
     const counts = {};
@@ -491,10 +526,24 @@ const [expiredSearch, setExpiredSearch] = useState("");
   }, [data.asignaciones]);
 
   const activeAssignmentBySubscription = useMemo(() => {
-    const map = {};
-    for (const assignment of (data.asignaciones || [])) if (assignment.activo) map[assignment.suscripcion_id] = assignment;
-    return map;
-  }, [data.asignaciones]);
+  const map = {};
+
+  for (const assignment of (data.asignaciones || [])) {
+    if (!assignment.activo) continue;
+
+    const item =
+      (data.inventario || []).find(
+        (account) => account.id === assignment.inventario_id
+      ) || null;
+
+    map[assignment.suscripcion_id] = {
+      ...assignment,
+      item,
+    };
+  }
+
+  return map;
+}, [data.asignaciones, data.inventario]);
 
   const availableInventory = useMemo(() => {
     const createdTime = (item) => {
@@ -594,14 +643,7 @@ const [expiredSearch, setExpiredSearch] = useState("");
 
   return availableInventory.filter((item) => {
 
-    console.log("CUENTA DURACION:", {
-    id: item.id,
-    servicio_id: item.servicio_id,
-    duracion_tipo: item.duracion_tipo,
-    duracion_cantidad: item.duracion_cantidad,
-    cupos_total: item.cupos_total,
-    estado: item.estado
-  });
+ 
 
     const inventoryService = data.servicios.find(
       (service) => service.id === item.servicio_id
@@ -646,22 +688,7 @@ const [expiredSearch, setExpiredSearch] = useState("");
   return 0;
 })();
 
-console.log("COMPARANDO:", {
-  pedido: requestedName,
-  inventario: inventoryName,
-  duracionCuenta: inventoryDays,
-  duracionSolicitada: requestedDays,
-  cupos: item.cupos_total
-});
 
-console.log("COMPARANDO INVENTARIO:", {
-  servicioPedido: requestedName,
-  servicioCuenta: inventoryName,
-  diasCuenta: inventoryDays,
-  diasSolicitados: requestedDays,
-  cupos: item.cupos_total,
-  idCuenta: item.id
-});
 
     // acepta hasta 4 días menos de margen
     if (inventoryDays + 4 < requestedDays) {
@@ -866,7 +893,7 @@ console.log("COMPARANDO INVENTARIO:", {
   }
 
   function selectDeliveryService(service) {
-    console.log("SERVICIO ELEGIDO FINAL:", service);
+    
   setDeliveryServiceQuery(inventoryServiceLabel(service));
   
   setShowDeliveryServiceMatches(false);
@@ -1622,17 +1649,51 @@ duracion_cantidad: selectedDeliveryService.duracion_cantidad
     );
   }
 
+
+
   function getRenewalDraft(id) {
     return renewalDrafts[id] || { tipo: "meses", cantidad: 1 };
   }
+
+  function getRenewAccountMode(id) {
+  return renewAccountMode[id] || "actual";
+}
+
+function setRenewAccountModeValue(id, value) {
+  setRenewAccountMode((prev) => ({
+    ...prev,
+    [id]: value
+  }));
+}
+
+function setRenewSelectedSlotValue(id, value) {
+  setRenewSelectedSlot((prev) => ({
+    ...prev,
+    [id]: value
+  }));
+}
+
+function setRenewSameAccountSlotValue(id, value) {
+  setRenewSameAccountSlot((prev) => ({
+    ...prev,
+    [id]: value
+  }));
+}
 
   function setRenewalDraft(id, changes) {
     setRenewalDrafts((prev) => ({ ...prev, [id]: { ...getRenewalDraft(id), ...changes } }));
   }
 
+  function setRenewSelectedInventoryValue(id,value){
+  setRenewSelectedInventory((prev)=>({
+    ...prev,
+    [id]:value
+  }));
+}
+
   async function renewSubscription(s) {
 
-    console.log("RENOVANDO SUSCRIPCIÓN:", s);
+
     const draft = getRenewalDraft(s.id);
     const max = draft.tipo === "dias" ? 30 : draft.tipo === "meses" ? 12 : 1;
     const rawQty = draft.tipo === "anios" ? 1 : Number(draft.cantidad);
@@ -1642,26 +1703,38 @@ duracion_cantidad: selectedDeliveryService.duracion_cantidad
     }
     const fecha_inicio = todayISO();
 const fecha_vencimiento = addDuration(fecha_inicio, draft.tipo, rawQty);
-console.log("DATOS QUE ENVIO:", {
-  id: s.id,
-  fecha_inicio,
-  fecha_vencimiento,
-  activo: true,
-  reporte_vencimiento: false,
-  fecha_reporte: null,
-  es_renovacion: true
-});
+const cambiarCuenta = getRenewAccountMode(s.id) === "nueva";
+
+const nuevoInventarioId = cambiarCuenta
+  ? renewSelectedInventory[s.id]
+  : null;
+
+const nuevoCupo = cambiarCuenta
+  ? Number(renewSelectedSlot[s.id])
+  : null;
+
+if (cambiarCuenta && (!nuevoInventarioId || !nuevoCupo)) {
+  setError("Seleccione la nueva cuenta y el perfil disponible.");
+  return;
+}
+
     await runAction(
       
-      () => api("/api/admin/suscripciones", { method: "PATCH", body: JSON.stringify({ 
+      () => api("/api/admin/suscripciones", { method: "PATCH", body: JSON.stringify(
+        {
   id: s.id,
   fecha_inicio,
   fecha_vencimiento,
   activo: true,
   reporte_vencimiento: false,
   fecha_reporte: null,
-  es_renovacion: true
-}) }),
+  es_renovacion: true,
+  cambiar_cuenta: cambiarCuenta,
+  nuevo_inventario_id: nuevoInventarioId,
+  nuevo_cupo: nuevoCupo
+}
+
+) }),
       `Renovada hasta ${formatDate(fecha_vencimiento)}.`
     );
     setRenewMenuId("");
@@ -1855,10 +1928,54 @@ console.log("DATOS QUE ENVIO:", {
     );
   }
 
+ function availableRenewalAccounts(s) {
+
+  const inventarios = data.inventario || [];
+  const asignaciones = data.asignaciones || [];
+
+  
+
+
+
+
+
+  return inventarios.filter((item) => {
+
+    if (item.servicios?.nombre !== s.servicio?.nombre) return false;
+
+    const asignacionActual = asignaciones.find(
+  (a) =>
+    a.suscripcion_id === s.id &&
+    a.activo === true
+);
+
+if (asignacionActual && item.id === asignacionActual.inventario_id) {
+  return false;
+}
+
+    if (
+      item.estado === "fallida" ||
+      item.estado === "reemplazada"
+    ) {
+      return false;
+    }
+
+    const usados = asignaciones.filter(
+      (a) =>
+        a.inventario_id === item.id &&
+        a.activo === true
+    );
+
+    return usados.length < Number(item.cupos_total || 1);
+
+  });
+}
+
   function renewalDropdown(s) {
     const draft = getRenewalDraft(s.id);
     const max = draft.tipo === "dias" ? 30 : draft.tipo === "meses" ? 12 : 1;
     const isOpen = renewMenuId === s.id;
+    
     return (
       <div className="renewMenuWrap">
         <button type="button" className="miniButton renewTrigger" onClick={() => setRenewMenuId(isOpen ? "" : s.id)}>
@@ -1866,6 +1983,165 @@ console.log("DATOS QUE ENVIO:", {
         </button>
         {isOpen && (
           <div className="renewDropdown">
+            <label>
+Cuenta para renovación
+
+<select
+ value={getRenewAccountMode(s.id)}
+ onChange={(e)=>setRenewAccountModeValue(s.id,e.target.value)}
+>
+ <option value="actual">
+  Mantener cuenta actual
+ </option>
+
+ <option value="nueva">
+  Cambiar por otra cuenta disponible
+ </option>
+
+</select>
+
+</label>
+
+{getRenewAccountMode(s.id) === "actual" && (
+  <label>
+    Perfil para renovación
+
+    <select
+      value={renewSameAccountSlot[s.id] || "mismo"}
+      onChange={(e) =>
+        setRenewSameAccountSlotValue(s.id, e.target.value)
+      }
+    >
+      <option value="mismo">
+        Mismo perfil
+      </option>
+
+      {(() => {
+        const asignacionActual = (data.asignaciones || []).find(
+          (a) =>
+            a.suscripcion_id === s.id &&
+            a.activo === true
+        );
+
+        if (!asignacionActual) return null;
+
+        const inventarioActual = (data.inventario || []).find(
+          (item) =>
+            item.id === asignacionActual.inventario_id
+        );
+
+        if (!inventarioActual) return null;
+
+        const totalPerfiles = Number(
+          inventarioActual.cupos_total || 1
+        );
+
+        return Array.from(
+          { length: totalPerfiles },
+          (_, index) => index + 1
+        )
+          .filter(
+            (perfil) =>
+              perfil !== Number(asignacionActual.cupo_numero)
+          )
+          .map((perfil) => (
+            <option key={perfil} value={perfil}>
+              Cambiar a Perfil {perfil}
+            </option>
+          ));
+      })()}
+    </select>
+  </label>
+)}
+
+
+{getRenewAccountMode(s.id) === "nueva" && (
+  <>
+    <label>
+      Nueva cuenta disponible
+
+      <select
+        value={renewSelectedInventory[s.id] || ""}
+        onChange={(e) =>
+          setRenewSelectedInventoryValue(s.id, e.target.value)
+        }
+      >
+        <option value="">
+          Seleccione una cuenta
+        </option>
+
+        {availableRenewalAccounts(s).map((item)=>(
+          <option key={item.id} value={item.id}>
+  {item.correo || "Cuenta sin correo"}
+  {` (${item.cupos_total || 1} perfiles)`}
+</option>
+        ))}
+
+      </select>
+    </label>
+
+
+    {renewSelectedInventory[s.id] && (
+      <label>
+        Perfil disponible
+
+        <select
+          value={renewSelectedSlot[s.id] || ""}
+          onChange={(e) =>
+            setRenewSelectedSlotValue(s.id, e.target.value)
+          }
+        >
+          <option value="">
+            Seleccione perfil
+          </option>
+
+          {(() => {
+
+  const cuentaSeleccionada = availableRenewalAccounts(s)
+    .find(
+      (item) =>
+        item.id === renewSelectedInventory[s.id]
+    );
+
+  const cuposTotal = Number(
+    cuentaSeleccionada?.cupos_total || 1
+  );
+
+  const ocupados = (data.asignaciones || [])
+    .filter(
+      (a) =>
+        a.inventario_id === renewSelectedInventory[s.id] &&
+        a.activo === true
+    )
+    .map(
+      (a) => Number(a.cupo_numero)
+    );
+
+
+  const perfilesLibres = Array.from(
+    { length: cuposTotal },
+    (_, index) => index + 1
+  )
+  .filter(
+    (perfil) =>
+      !ocupados.includes(perfil)
+  );
+
+
+  return perfilesLibres.map((perfil) => (
+    <option key={perfil} value={perfil}>
+      Perfil {perfil}
+    </option>
+  ));
+
+})()}
+
+        </select>
+
+      </label>
+    )}
+  </>
+)}
             <label>Tiempo
               <select value={draft.tipo} onChange={(e) => setRenewalDraft(s.id, { tipo: e.target.value, cantidad: 1 })}>
                 <option value="dias">Días</option>
@@ -1896,6 +2172,8 @@ console.log("DATOS QUE ENVIO:", {
       </div>
     );
   }
+
+
 
   function inventoryAccountRenewalDropdown(item) {
     const draft = getInventoryRenewalDraft(item.id);
@@ -1982,6 +2260,7 @@ console.log("DATOS QUE ENVIO:", {
                   <th>Cliente</th>
                   <th>Servicio</th>
                   <th>Perfil / cupo</th>
+                  <th>Credenciales</th>
                   <th>Estado</th>
                   <th>Fecha inicio</th>
                   <th>Fecha final</th>
@@ -1997,7 +2276,7 @@ console.log("DATOS QUE ENVIO:", {
                   const wa = whatsappHref(s);
                   const assignment = activeAssignmentBySubscription[s.id];
                   const editing = editingSubscriptionId === s.id;
-                  console.log("SUSCRIPCION TABLA:", s);
+                  
                   return (
                     <tr key={s.id} className={editing ? "subscriptionEditRow" : ""}>
                       {deleteMode["suscripciones"] && (
@@ -2014,6 +2293,60 @@ console.log("DATOS QUE ENVIO:", {
                       <td>{editing && assignment ? (
                         <input className="smallNumberInput" type="number" min="1" inputMode="numeric" value={subscriptionEditForm.cupo_numero} onChange={(e) => setSubscriptionEditForm((prev) => ({ ...prev, cupo_numero: e.target.value }))} />
                       ) : assignment ? `${effectiveDeliveryType(s.servicio) === "estandar" ? "Perfil" : "Cupo"} ${assignment.cupo_numero}` : "—"}</td>
+                      <td>
+  {assignment?.item ? (
+    <details className="credentialsDetails">
+      <summary>🔐 Ver credenciales</summary>
+
+      <div className="credentialsPanel">
+        <div>
+          <strong>Cuenta:</strong>
+          <span>
+            {assignment.item.correo ||
+              assignment.item.grupo ||
+              "—"}
+          </span>
+        </div>
+
+        <div>
+          <strong>Contraseña:</strong>
+          <span>
+            {assignment.item.clave || "—"}
+          </span>
+        </div>
+
+        {assignment.cupo_numero && (
+          <div>
+            <strong>
+              {effectiveDeliveryType(s.servicio) === "estandar"
+                ? "Perfil:"
+                : "Cupo:"}
+            </strong>
+            <span>{assignment.cupo_numero}</span>
+          </div>
+        )}
+
+        {assignment.item.perfiles_pins &&
+          assignment.item.perfiles_pins[
+            String(assignment.cupo_numero)
+          ] && (
+            <div>
+              <strong>PIN:</strong>
+              <span>
+                {
+                  assignment.item.perfiles_pins[
+                    String(assignment.cupo_numero)
+                  ]
+                }
+              </span>
+            </div>
+          )}
+      </div>
+    </details>
+  ) : (
+    <span className="noPhone">Sin credenciales</span>
+  )}
+</td>
                       <td><span className={status.className}>{status.text}</span></td>
                       <td>{editing ? <input type="date" value={subscriptionEditForm.fecha_inicio} onChange={(e) => setSubscriptionEditForm((prev) => ({ ...prev, fecha_inicio: e.target.value }))} /> : formatDate(s.fecha_inicio)}</td>
                       <td>{formatDate(s.fecha_vencimiento)}</td>
@@ -2077,14 +2410,7 @@ console.log("DATOS QUE ENVIO:", {
     const orderUsesInventory = Boolean(selectedService && orderSource === "stock" && orderInventoryOptions.length > 0);
     const orderUsesExternal = Boolean(selectedService && orderSource === "external");
     const orderSlots = availableSlots(selectedInventoryItem);
-    console.log("FECHA FINAL STOCK:", {
-  servicio: selectedService?.nombre,
-  tipoServicio: selectedService?.duracion_tipo,
-  cantidadServicio: selectedService?.duracion_cantidad,
-  cuenta: selectedInventoryItem?.duracion_tipo,
-  cantidadCuenta: selectedInventoryItem?.duracion_cantidad,
-  inicio: deliveryForm.fecha_inicio
-});
+    
     const orderExpiry = orderUsesInventory
   ? addDuration(
       deliveryForm.fecha_inicio || todayISO(),
@@ -2096,7 +2422,7 @@ console.log("DATOS QUE ENVIO:", {
     
       ? whatsappUrl(generatedDelivery.cliente.telefono, generatedDelivery.text)
       : "";
-      console.log("MENSAJE WHATSAPP:", generatedDelivery?.text);
+      
     const selectedType = effectiveDeliveryType(selectedService);
 
     function orderAccountLabel(item) {
@@ -2761,9 +3087,13 @@ onChange={(e)=>setExpiredSearch(e.target.value)}
 ).sort((a, b) =>
   String(a.nombre || "").localeCompare(String(b.nombre || ""), "es")
 );
-      console.log("INVENTORY SERVICES:", inventoryServices);
+      
 
     const activeAssignments = (data.asignaciones || []).filter((assignment) => {
+
+  // SOLO MOSTRAR ASIGNACIONES ACTIVAS
+  if (assignment.activo !== true) return false;
+
   const sub = enrichedSubs.find(
     (item) => item.id === assignment.suscripcion_id
   );
