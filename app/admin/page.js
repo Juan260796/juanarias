@@ -3606,7 +3606,7 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
       type="number"
       min="1"
       max={inventoryEditForm.duracion_tipo === "dias" ? 30 : 12}
-      value={inventoryEditForm.duracion_cantidad || 1}
+      value={inventoryEditForm.duracion_cantidad ?? ""}
       onChange={(e) =>
         setInventoryEditForm({
           ...inventoryEditForm,
