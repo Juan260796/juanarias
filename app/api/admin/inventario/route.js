@@ -201,10 +201,17 @@ export async function PATCH(request) {
     if (currentError || !current) return Response.json({ error: currentError?.message || "Cuenta no encontrada." }, { status: 404 });
 
     const today = todayISO();
-    const base = current.fecha_vencimiento && current.fecha_vencimiento >= today ? current.fecha_vencimiento : today;
-    const fecha_vencimiento = addDurationISO(base, tipo, cantidad);
-    const changes = { fecha_vencimiento };
-    if (current.estado === "reemplazada") changes.estado = "disponible";
+
+const fecha_inicio = today;
+const fecha_vencimiento = addDurationISO(fecha_inicio, tipo, cantidad);
+
+const changes = {
+  fecha_carga: fecha_inicio,
+  fecha_vencimiento,
+  duracion_tipo: tipo,
+  duracion_cantidad: cantidad,
+  estado: "disponible"
+};
 
     const { data, error } = await auth.supabase
       .from("inventario_cuentas")
@@ -226,11 +233,7 @@ export async function PATCH(request) {
     const fecha_ganancia = String(fecha_inicio || body.fecha_ganancia || "").trim();
     const duracion_tipo = String(body.duracion_tipo || "dias");
     const duracion_cantidad = Number(body.duracion_cantidad || 1);
-    console.log("DURACION RECIBIDA BACKEND:", {
-  duracion_tipo,
-  duracion_cantidad,
-  bodyCompleto: body
-});
+    
     if (!cliente_id) return Response.json({ error: "Selecciona un cliente." }, { status: 400 });
     if (!fecha_inicio) return Response.json({ error: "Selecciona la fecha de inicio." }, { status: 400 });
     if (!Number.isFinite(ganancia_neta) || ganancia_neta < 0) return Response.json({ error: "Escribe una ganancia neta válida para el pedido." }, { status: 400 });
@@ -244,11 +247,7 @@ export async function PATCH(request) {
       return Response.json({ error: "Para Gemini escribe el correo Gmail del cliente." }, { status: 400 });
     }
 
-    console.log("ANTES ADD DURATION:", {
-  fecha_inicio,
-  duracion_tipo,
-  duracion_cantidad
-});
+  
 
     const fecha_vencimiento = addDurationISO(
           fecha_inicio,

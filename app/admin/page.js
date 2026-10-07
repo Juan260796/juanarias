@@ -323,7 +323,7 @@ const [expiredSearch, setExpiredSearch] = useState("");
     await refresh();
 
   } catch (error) {
-    console.error("Error marcar reportada:", error);
+    
   }
 }
 
@@ -1069,12 +1069,17 @@ const [expiredSearch, setExpiredSearch] = useState("");
   }
 
   function beginInventoryEdit(item) {
-    setEditingInventoryId(item.id);
-    setInventoryEditForm({
-      servicio_id: item.servicio_id || "", proveedor_id: item.proveedor_id || "", correo: item.correo || "", clave: item.clave || "", pin: item.pin || "", perfiles_pins: item.perfiles_pins || {}, grupo: item.grupo || "",
-      cupos_total: item.cupos_total || 1, duracion_tipo: item.duracion_tipo || "dias", duracion_cantidad: item.duracion_cantidad || 30, notas: item.notas || "", fecha_carga: item.fecha_carga || todayISO()
-    });
-  }
+  setEditingInventoryId(item.id);
+  setInventoryEditForm({
+    servicio_id: item.servicio_id || "",
+    proveedor_id: item.proveedor_id || "",
+    correo: item.correo || "",
+    cupos_total: item.cupos_total || 1,
+    duracion_tipo: item.duracion_tipo || "dias",
+    duracion_cantidad: item.duracion_cantidad || 1,
+    fecha_carga: item.fecha_carga || ""
+  });
+}
 
   async function deleteInventoryItem(item) {
     if (!confirmDelete()) return;
@@ -3538,9 +3543,80 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
                 <form className="card adminForm inventoryEditPanel" onSubmit={saveInventoryEdit}>
                   <h3>Editar cuenta</h3>
                   <div className="twoCols">
-                    <label>Proveedor<select value={inventoryEditForm.proveedor_id || ""} onChange={(e) => setInventoryEditForm({ ...inventoryEditForm, proveedor_id: e.target.value })}>{(data.proveedores || []).filter((p) => p.activo !== false).map((p) => <option key={p.id} value={p.id}>{p.iniciales}</option>)}</select></label>
-                    <label>Duración<select value={inventoryEditForm.duracion_tipo || "dias"} onChange={(e) => setInventoryEditForm({ ...inventoryEditForm, duracion_tipo: e.target.value, duracion_cantidad: 1 })}><option value="dias">Días</option><option value="meses">Meses</option></select></label>
-                  </div>
+
+  <label>
+    Proveedor
+    <select
+      value={inventoryEditForm.proveedor_id || ""}
+      onChange={(e) =>
+        setInventoryEditForm({
+          ...inventoryEditForm,
+          proveedor_id: e.target.value
+        })
+      }
+    >
+      {(data.proveedores || [])
+        .filter((p) => p.activo !== false)
+        .map((p) => (
+          <option key={p.id} value={p.id}>
+            {p.iniciales}
+          </option>
+        ))}
+    </select>
+  </label>
+
+  <label>
+    Fecha de creación
+    <input
+      type="date"
+      value={inventoryEditForm.fecha_carga || ""}
+      onChange={(e) =>
+        setInventoryEditForm({
+          ...inventoryEditForm,
+          fecha_carga: e.target.value
+        })
+      }
+    />
+  </label>
+
+</div>
+
+<div className="twoCols">
+
+  <label>
+    Duración
+    <select
+      value={inventoryEditForm.duracion_tipo || "dias"}
+      onChange={(e) =>
+        setInventoryEditForm({
+          ...inventoryEditForm,
+          duracion_tipo: e.target.value,
+          duracion_cantidad: 1
+        })
+      }
+    >
+      <option value="dias">Días</option>
+      <option value="meses">Meses</option>
+    </select>
+  </label>
+
+  <label>
+    Cantidad de tiempo
+    <input
+      type="number"
+      min="1"
+      max={inventoryEditForm.duracion_tipo === "dias" ? 30 : 12}
+      value={inventoryEditForm.duracion_cantidad || 1}
+      onChange={(e) =>
+        setInventoryEditForm({
+          ...inventoryEditForm,
+          duracion_cantidad: e.target.value
+        })
+      }
+    />
+  </label>
+
+</div>
                   <div className="twoCols"><input placeholder="Correo / acceso" value={inventoryEditForm.correo || ""} onChange={(e) => setInventoryEditForm({ ...inventoryEditForm, correo: e.target.value })} /><input placeholder="Grupo (Gemini)" value={inventoryEditForm.grupo || ""} onChange={(e) => setInventoryEditForm({ ...inventoryEditForm, grupo: e.target.value })} /></div>
                   <div className="twoCols"><input placeholder="Clave" value={inventoryEditForm.clave || ""} onChange={(e) => setInventoryEditForm({ ...inventoryEditForm, clave: e.target.value })} /><label>Cantidad de tiempo<input type="number" min="1" max={inventoryEditForm.duracion_tipo === "dias" ? 30 : 12} value={inventoryEditForm.duracion_cantidad || 1} onChange={(e) => setInventoryEditForm({ ...inventoryEditForm, duracion_cantidad: e.target.value })} /></label></div>
                   <label>Cupos / perfiles<input type="number" min="1" max="50" value={inventoryEditForm.cupos_total || 1} onChange={(e) => setInventoryEditForm({ ...inventoryEditForm, cupos_total: e.target.value })} /></label>
