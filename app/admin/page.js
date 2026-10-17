@@ -1215,11 +1215,10 @@ const [profitEditValue, setProfitEditValue] = useState("");
     if (!sub || !item) return "";
     const cliente = sub.cliente?.nombre || sub.cliente?.username || "Cliente";
     const service = sub.servicio || data.servicios.find((srv) => srv.id === sub.servicio_id);
-    const type = effectiveDeliveryType(service);
     const durationLabel = inventoryDurationText(item);
     const provider = providerInitials(item);
     const providerTag = provider ? ` (${provider})` : "";
-    const purchaseDate = formatLongDate(type === "gemini" && !assignmentData.garantia ? (assignmentData.fecha_entrega || todayISO()) : sub.fecha_inicio);
+    const purchaseDate = formatLongDate(sub.fecha_inicio);
     const cupo = assignmentData.cupo_numero || deliveryForm.cupo_numero || 1;
     const clientEmail = assignmentData.correo_cliente || deliveryForm.correo_cliente || "";
     const profilePin = item.perfiles_pins?.[String(cupo)] || item.pin || "";
@@ -1243,63 +1242,9 @@ const [profitEditValue, setProfitEditValue] = useState("");
       return withPurchaseThanks(aplicarPlantilla(plantilla.contenido, datos));
     }
 
-    if (isCapcutService(service)) {
-      return withPurchaseThanks(`${service?.nombre || "Capcut pro"} 1 dispositivo x${durationLabel} (${purchaseDate})${providerTag}
-
-Correo: ${item.correo || ""}
-Clave: ${item.clave || ""}
-
-${cliente}
-
-${String.fromCodePoint(0x2705)}Ingresar en (correo electrónico)
-${String.fromCodePoint(0x1F6AB)}No en gmail.com
-
-${String.fromCodePoint(0x1F4BB)} Cómo entrar desde tu PC:
-1${String.fromCodePoint(0xFE0F, 0x20E3)} Primero inicia sesión desde el celular ${String.fromCodePoint(0x1F4F2)}.
-2${String.fromCodePoint(0xFE0F, 0x20E3)} Luego escanea el código QR en tu computadora ${String.fromCodePoint(0x1F4BB)}.
-
-${String.fromCodePoint(0x26A0, 0xFE0F)} Importante:
-${String.fromCodePoint(0x1F6A8)}${String.fromCodePoint(0x1F4F8)} para reportes o ver el tiempo de caducidad.
-${String.fromCodePoint(0x2705)}Envíame una captura de pantalla de:
--ingresa desde celular a la apk de capcut.
--Ver perfil
--Pro
--y ahi sale la fecha fin.
--Prohibido salir del team.
-
-${String.fromCodePoint(0x2728)} En resumen:
-${String.fromCodePoint(0x1F449)} Ingresa y usa en un único dispositivo máximo\n\n${REGLAS_PREDETERMINADAS}`);
-    }
-
-    if (type === "chatgpt") {
-      return withPurchaseThanks(`${service?.nombre || "Chat GPT Plus"} x${durationLabel} (${purchaseDate})${providerTag}
-
-Correo: ${item.correo || ""} (${cupo})
-(Solicitar codigo)
-
-${cliente}
-
--Recuerda el ingreso es para un solo dispositivo ${String.fromCodePoint(0x1F601)}
--Prohibido borrar las busquedas ${String.fromCodePoint(0x1F6AB)}
--La cuenta es compartida con otros usuarios ${String.fromCodePoint(0x1FAC2)}
--Prohibido cambiar cualquier tipo de información ${String.fromCodePoint(0x1FAE1)}
-Ingresar solo en las apps oficiales, no por el navegador${String.fromCodePoint(0x1F6A8)}
-(Descargar la app ya sea en PC o CEL)
-Respeta las reglas para mantener tu garantía${String.fromCodePoint(0x2611, 0xFE0F)}\n\n${REGLAS_PREDETERMINADAS}`);
-    }
-
-    if (type === "gemini") {
-      return withPurchaseThanks(`Invitación enviada al correo (Gmail). Por favor, aceptar ${String.fromCodePoint(0x2705)} ${String.fromCodePoint(0x1F4E9)}
-
-Recuerda aceptar y verificar que quedes dentro del grupo familiar ${String.fromCodePoint(0x2611, 0xFE0F)}${String.fromCodePoint(0x1F601)}
-
-${service?.nombre || "Gemini Pro"} x${durationLabel} (${purchaseDate})${providerTag}
-
-Correo: ${clientEmail}
-Grupo: ${item.grupo || item.correo || ""}
-
-${cliente}\n\n${REGLAS_PREDETERMINADAS}`);
-    }
+    // Los mensajes específicos de ChatGPT, Gemini y CapCut ya no están
+    // codificados aquí. Se administran desde Plantillas de mensajes en Supabase.
+    // Solo se aplica el mensaje general cuando no exista plantilla personalizada.
 
     const pinLine = profilePin ? `\nPIN: ${profilePin}` : "";
     const profileLine = cupo ? `\nPERFIL ${cupo}` : "";

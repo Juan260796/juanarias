@@ -2,7 +2,7 @@ import { requireAdmin } from "../../../../lib/supabase-server";
 
 const VALID_VARIABLES = new Set([
   "cliente", "servicio", "tiempo", "correo", "clave", "perfil", "pin",
-  "proveedor", "fecha_inicio", "fecha_vencimiento", "grupo", "correo_cliente"
+  "proveedor", "fecha_inicio", "fecha_creacion", "fecha_vencimiento", "grupo", "correo_cliente"
 ]);
 
 export async function POST(request) {
