@@ -11,10 +11,13 @@ function normalizeText(value) {
 }
 
 function normalizePhone(value) {
-  let digits = String(value || "").replace(/\D/g, "");
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  if (!/^[+\d\s().-]+$/.test(raw)) return `usuario:${raw.replace(/^@/, "").toLowerCase()}`;
+  let digits = raw.replace(/\D/g, "");
   if (digits.length === 12 && digits.startsWith("57")) digits = digits.slice(2);
   if (digits.length === 14 && digits.startsWith("0057")) digits = digits.slice(4);
-  return digits;
+  return `numero:${digits}`;
 }
 
 async function findClientConflict(supabase, { id = "", nombre, username, telefono }) {
@@ -36,7 +39,7 @@ async function findClientConflict(supabase, { id = "", nombre, username, telefon
       return { message: "Ese nombre de usuario ya está registrado." };
     }
     if (wantedPhone && normalizePhone(client.telefono) === wantedPhone) {
-      return { message: "Ya existe un cliente con ese número de celular." };
+      return { message: "Ya existe un cliente con ese teléfono o usuario de WhatsApp." };
     }
   }
   return {};
@@ -44,7 +47,7 @@ async function findClientConflict(supabase, { id = "", nombre, username, telefon
 
 function duplicateClientFriendly(message = "") {
   if (/DUPLICATE_CLIENT_NAME/i.test(message)) return "Ya existe un cliente con ese nombre.";
-  if (/DUPLICATE_CLIENT_PHONE/i.test(message)) return "Ya existe un cliente con ese número de celular.";
+  if (/DUPLICATE_CLIENT_PHONE/i.test(message)) return "Ya existe un cliente con ese teléfono o usuario de WhatsApp.";
   if (/DUPLICATE_CLIENT_USERNAME/i.test(message)) return "Ese nombre de usuario ya está registrado.";
   if (/duplicate|unique/i.test(message)) return "Ya existe un cliente con alguno de esos datos.";
   return message;
@@ -87,7 +90,7 @@ export async function POST(request) {
 
   const { data: cliente, error: clienteError } = await supabase
     .from("clientes")
-    .insert({ nombre, username, telefono, email: null, auth_user_id: created.user.id })
+    .insert({ nombre, username, telefono,  email: null, auth_user_id: created.user.id })
     .select("id,nombre,username,telefono,created_at,auth_user_id")
     .single();
 
@@ -149,7 +152,7 @@ export async function PATCH(request) {
 
   const { data: cliente, error } = await supabase
     .from("clientes")
-    .update({ nombre, username, telefono, email: null })
+    .update({ nombre, username, telefono,  email: null })
     .eq("id", id)
     .select("id,nombre,username,telefono,created_at,auth_user_id")
     .single();

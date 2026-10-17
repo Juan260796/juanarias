@@ -89,6 +89,34 @@ const action = String(body.action || "");
 
 if (!id) return Response.json({ error: "Falta el ID de la suscripción." }, { status: 400 });
 
+if (action === "editar_ganancia") {
+  const ganancia_neta = Number(body.ganancia_neta);
+
+  if (!Number.isFinite(ganancia_neta) || ganancia_neta < 0) {
+    return Response.json(
+      { error: "Escribe una ganancia válida." },
+      { status: 400 }
+    );
+  }
+
+  const { data, error } = await supabase
+    .from(body.es_ganancia_renovacion === true ? "ganancias_renovaciones" : "suscripciones")
+    .update({ ganancia_neta })
+    .eq("id", id)
+     .select(body.es_ganancia_renovacion === true ? "id,ganancia_neta,fecha_ganancia" : "id,ganancia_neta,fecha_inicio,fecha_ganancia")
+    .single();
+
+  if (error) {
+    return Response.json(
+      { error: error.message },
+      { status: 400 }
+    );
+  }
+
+  return Response.json({
+    suscripcion: data
+  });
+}
 
 if (action === "marcar_reportada") {
 
@@ -126,6 +154,25 @@ if (action === "marcar_reportada") {
     .single();
   if (currentError || !current) return Response.json({ error: currentError?.message || "Pedido no encontrado." }, { status: 404 });
 
+  // Una renovación crea una ganancia independiente; no modifica la ganancia original.
+  let renewalProfit = null;
+  if (body.es_renovacion === true) {
+    const rawProfit = body.ganancia_renovacion;
+    renewalProfit = Number(rawProfit);
+    if (rawProfit === undefined || rawProfit === null || rawProfit === "" ||
+        !Number.isFinite(renewalProfit) || renewalProfit < 0) {
+      return Response.json({ error: "Indica una ganancia neta válida para la renovación (puede ser 0)." }, { status: 400 });
+    }
+    // Evita alterar perfiles/fechas si la migración SQL todavía no se ha aplicado.
+    const { error: profitTableError } = await supabase
+      .from("ganancias_renovaciones")
+      .select("id", { head: true })
+      .limit(1);
+    if (profitTableError) {
+      return Response.json({ error: "Falta ejecutar la migración MIGRACION_GANANCIAS_RENOVACIONES.sql en Supabase: " + profitTableError.message }, { status: 400 });
+    }
+  }
+
   const changes = {};
 
 if (typeof body.activo === "boolean") {
@@ -153,10 +200,62 @@ if (typeof body.reporte_vencimiento === "boolean") {
   changes.reporte_vencimiento = body.reporte_vencimiento;
 }
 
-// LIMPIAR REPORTE AL RENOVAR
-if (body.es_renovacion === true) {
-  changes.reporte_vencimiento = false;
-  changes.fecha_reporte = null;
+
+
+// RENOVACIÓN EN LA MISMA CUENTA: recuperar la última asignación
+// incluso si fue liberada al vencer hace más de 2 días.
+if (body.es_renovacion === true && body.cambiar_cuenta !== true) {
+  const { data: history, error: historyError } = await supabase
+    .from("inventario_asignaciones")
+    .select("*")
+    .eq("suscripcion_id", id);
+
+  if (historyError) return Response.json({ error: historyError.message }, { status: 400 });
+
+  // Los pedidos creados sin credenciales siguen renovándose normalmente.
+  const assigned = (history || []).filter(a => a.inventario_id);
+  const previous = assigned.find(a => a.activo === true) || assigned[assigned.length - 1];
+
+  if (previous) {
+    const accountId = previous.inventario_id;
+    const requested = String(body.perfil_misma_cuenta || "mismo");
+    const slot = requested === "mismo" ? Number(previous.cupo_numero) : Number(requested);
+    if (!Number.isInteger(slot) || slot < 1) {
+      return Response.json({ error: "El perfil/cupo seleccionado no es válido." }, { status: 400 });
+    }
+
+    const { data: account, error: accountError } = await supabase
+      .from("inventario_cuentas")
+      .select("id,cupos_total,estado,servicio_id")
+      .eq("id", accountId).maybeSingle();
+    if (accountError) return Response.json({ error: accountError.message }, { status: 400 });
+    if (!account || ["fallida", "reemplazada"].includes(account.estado)) {
+      return Response.json({ error: "La cuenta anterior ya no está disponible. Selecciona cambiar por otra cuenta." }, { status: 409 });
+    }
+    if (slot > Number(account.cupos_total || 1)) {
+      return Response.json({ error: `La cuenta solo tiene ${account.cupos_total || 1} perfil(es)/cupo(s).` }, { status: 400 });
+    }
+
+    const { data: occupied, error: occupiedError } = await supabase
+      .from("inventario_asignaciones")
+      .select("id,suscripcion_id")
+      .eq("inventario_id", accountId)
+      .eq("cupo_numero", slot)
+      .eq("activo", true);
+    if (occupiedError) return Response.json({ error: occupiedError.message }, { status: 400 });
+    if ((occupied || []).some(a => a.suscripcion_id !== id)) {
+      return Response.json({ error: `El perfil/cupo ${slot} de la cuenta anterior ya está ocupado. Elige otra cuenta o un perfil libre.` }, { status: 409 });
+    }
+
+    if (!previous.activo || Number(previous.cupo_numero) !== slot) {
+      const { error: restoreError } = await supabase
+        .from("inventario_asignaciones")
+        .update({ activo: true, cupo_numero: slot })
+        .eq("id", previous.id);
+      if (restoreError) return Response.json({ error: restoreError.message }, { status: 400 });
+    }
+    await recalcInventoryState(supabase, accountId);
+  }
 }
 
 // CAMBIO DE CUENTA AL RENOVAR
@@ -313,7 +412,6 @@ if (Object.prototype.hasOwnProperty.call(body, "fecha_reporte")) {
   changes.fecha_reporte = body.fecha_reporte;
 }
 
-
   const wantsEditableFields = Boolean(
   (body.fecha_inicio || body.servicio_id || Object.prototype.hasOwnProperty.call(body, "cupo_numero"))
   && !body.es_renovacion
@@ -400,10 +498,9 @@ if (Object.prototype.hasOwnProperty.call(body, "fecha_reporte")) {
 // Si solo se está editando el cupo, servicio u otro dato,
 // conservamos la fecha de vencimiento original del pedido.
 // No usamos la duración de inventario para modificarla.
-
 changes.fecha_inicio = nextStart;
+changes.fecha_ganancia = nextStart;
 changes.servicio_id = nextServiceId;
-
 // Solo recalcular la fecha de vencimiento si realmente
 // cambió la fecha de inicio.
 if (nextStart !== current.fecha_inicio) {
@@ -497,6 +594,30 @@ if (error) {
   return Response.json({ error: error.message }, { status: 400 });
 }
 
+// Guardamos una fila por renovación; jamás sobrescribimos suscripciones.ganancia_neta.
+if (body.es_renovacion === true) {
+  const [{ data: clientRow }, { data: serviceRow }] = await Promise.all([
+    supabase.from("clientes").select("nombre").eq("id", current.cliente_id).maybeSingle(),
+    supabase.from("servicios").select("nombre").eq("id", current.servicio_id).maybeSingle()
+  ]);
+  const { error: renewalInsertError } = await supabase
+    .from("ganancias_renovaciones")
+    .insert({
+      suscripcion_id: id,
+      cliente_id: current.cliente_id,
+      servicio_id: current.servicio_id,
+      cliente_nombre: clientRow?.nombre || "Cliente",
+      servicio_nombre: serviceRow?.nombre || "Servicio",
+      ganancia_neta: renewalProfit,
+      fecha_ganancia: String(changes.fecha_inicio || new Date().toISOString().slice(0, 10))
+    });
+  if (renewalInsertError) {
+    return Response.json({
+      error: "La renovación pudo haberse aplicado, pero NO se guardó su ganancia. No repitas la renovación antes de revisar: " + renewalInsertError.message
+    }, { status: 500 });
+  }
+}
+
 // await syncOrderMembership(supabase, id);
 
 return Response.json({ ok: true, updated });
@@ -536,42 +657,26 @@ export async function DELETE(request) {
       .eq("suscripcion_id", id);
     if (releaseError) return Response.json({ error: releaseError.message }, { status: 400 });
   }
-  const { data: subscription } = await supabase
-  .from("suscripciones")
-  .select("created_at")
-  .eq("id", id)
-  .single();
+  // Eliminación MANUAL: borra también todas las ganancias asociadas a este pedido,
+  // independientemente de su antigüedad. El archivado AUTOMÁTICO por vencimiento
+  // se hace en /api/admin/data y no pasa por esta ruta.
+  const { error: renewalProfitDeleteError } = await supabase
+    .from("ganancias_renovaciones")
+    .delete()
+    .eq("suscripcion_id", id);
 
-const diasActiva = subscription?.created_at
-  ? Math.floor(
-      (new Date() - new Date(subscription.created_at)) /
-      (1000 * 60 * 60 * 24)
-    )
-  : 0;
-
-  if (diasActiva > 5) {
-
-  const { error } = await supabase
-    .from("suscripciones")
-    .update({ activo: false })
-    .eq("id", id);
-
-  if (error) {
-    return Response.json({ error: error.message }, { status: 400 });
+  if (renewalProfitDeleteError) {
+    return Response.json({ error: `No se eliminaron las ganancias de renovación: ${renewalProfitDeleteError.message}` }, { status: 400 });
   }
 
-} else {
-
-  const { error } = await supabase
+  const { error: subscriptionDeleteError } = await supabase
     .from("suscripciones")
     .delete()
     .eq("id", id);
 
-  if (error) {
-    return Response.json({ error: error.message }, { status: 400 });
+  if (subscriptionDeleteError) {
+    return Response.json({ error: `No se pudo eliminar el pedido: ${subscriptionDeleteError.message}` }, { status: 400 });
   }
-
-}
 
   await Promise.all(inventoryIds.map((inventoryId) => recalcInventoryState(supabase, inventoryId)));
   if (googleSnapshot?.isJU) await syncOrderDelete(id);

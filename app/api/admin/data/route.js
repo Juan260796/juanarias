@@ -201,6 +201,7 @@ let suscripcionesRes = await supabase
     activo,
     reporte_vencimiento,
     fecha_reporte,
+    excluido_conteo,
     clientes(id,nombre,username,telefono),
     servicio:servicios!suscripciones_servicio_id_fkey(nombre) 
   `)
@@ -223,6 +224,7 @@ let suscripcionesRes = await supabase
     activo,
     reporte_vencimiento,
     fecha_reporte,
+    excluido_conteo,
     clientes(id,nombre,username,telefono),
     servicio:servicios!suscripciones_servicio_id_fkey(nombre)
   `)
@@ -230,11 +232,24 @@ let suscripcionesRes = await supabase
     if (suscripcionesRes.error) return Response.json({ error: suscripcionesRes.error.message }, { status: 500 });
   }
 
+  // Ganancias de renovaciones: una fila por evento y fecha real de renovación.
+  const { data: renewalEarnings, error: renewalEarningsError } = await supabase
+    .from("ganancias_renovaciones")
+    .select("id,suscripcion_id,cliente_id,servicio_id,cliente_nombre,servicio_nombre,ganancia_neta,fecha_ganancia,created_at")
+    .order("fecha_ganancia", { ascending: false });
+  if (renewalEarningsError) {
+    return Response.json({ error: "Consulta de ganancias de renovación: " + renewalEarningsError.message + ". Ejecuta MIGRACION_GANANCIAS_RENOVACIONES.sql." }, { status: 500 });
+  }
+
   const allSubscriptions = suscripcionesRes.data || [];
-  const visibleSubscriptions = allSubscriptions.filter((item) => !archivedIds.has(item.id));
+  const visibleSubscriptions = allSubscriptions.filter((item) => !archivedIds.has(item.id) && item.excluido_conteo !== true);
   const order_counts = {};
   for (const item of allSubscriptions) {
-    if (item.cliente_id) order_counts[item.cliente_id] = (order_counts[item.cliente_id] || 0) + 1;
+    // Solo excluimos pedidos que se eliminaron manualmente en versiones anteriores.
+    // Los archivados automáticamente permanecen en el historial y siguen contando.
+    if (item.cliente_id && item.excluido_conteo !== true) {
+      order_counts[item.cliente_id] = (order_counts[item.cliente_id] || 0) + 1;
+    }
   }
 
   let premios_fidelidad = [];
@@ -247,8 +262,17 @@ let suscripcionesRes = await supabase
   const inventoryHistory = inventarioRes.data || [];
   // Las cuentas externas se crean al momento de un pedido para mostrar sus
   // credenciales al cliente, pero no forman parte del stock administrado.
-  const managedInventoryHistory = inventoryHistory.filter((item) => item.etiqueta !== "externa");
-  const visibleInventory = managedInventoryHistory.filter((item) => item.estado !== "reemplazada");
+  const managedInventoryHistory = inventoryHistory.filter(
+  (item) => item.etiqueta !== "externa"
+);
+
+const externalInventory = inventoryHistory.filter(
+  (item) => item.etiqueta === "externa"
+);
+
+const visibleInventory = managedInventoryHistory.filter(
+  (item) => item.estado !== "reemplazada"
+);
 
   
   
@@ -256,14 +280,48 @@ let suscripcionesRes = await supabase
     clientes: clientesRes.data || [],
     servicios: serviciosRes.data || [],
     suscripciones: visibleSubscriptions,
-    ganancias: profitSchemaReady
-      ? allSubscriptions.map((item) => ({ id: item.id, fecha_inicio: item.fecha_inicio, fecha_ganancia: item.fecha_ganancia, ganancia_neta: item.ganancia_neta == null ? null : Number(item.ganancia_neta) }))
-      : [],
+
+   ganancias: profitSchemaReady
+  ? allSubscriptions.map((item) => ({
+      id: item.id,
+      cliente_id: item.cliente_id,
+      servicio_id: item.servicio_id,
+      fecha_inicio: item.fecha_inicio,
+      fecha_vencimiento: item.fecha_vencimiento,
+      fecha_ganancia: item.fecha_ganancia,
+      ganancia_neta:
+        item.ganancia_neta == null
+          ? null
+          : Number(item.ganancia_neta),
+      cliente: Array.isArray(item.clientes)
+        ? item.clientes[0] || null
+        : item.clientes || null,
+      servicio: Array.isArray(item.servicio)
+        ? item.servicio[0] || null
+        : item.servicio || null
+    })).concat((renewalEarnings || []).map((item) => ({
+      id: item.id,
+      suscripcion_id: item.suscripcion_id,
+      es_renovacion: true,
+      cliente_id: item.cliente_id,
+      servicio_id: item.servicio_id,
+      fecha_inicio: item.fecha_ganancia,
+      fecha_ganancia: item.fecha_ganancia,
+      ganancia_neta: Number(item.ganancia_neta),
+      cliente: { nombre: item.cliente_nombre || "Cliente" },
+      servicio: { nombre: item.servicio_nombre || "Servicio" }
+    })))
+  : [],
+
     ganancias_configuradas: profitSchemaReady,
     promociones: promocionesRes.data || [],
     premios_fidelidad,
-    inventario: visibleInventory,
-    inventario_historico: managedInventoryHistory,
+
+inventario: visibleInventory,
+inventario_historico: managedInventoryHistory,
+inventario_externo: inventoryHistory.filter(
+  (item) => item.etiqueta === "externa"
+),
     proveedores: proveedoresRes.data || [],
     asignaciones: asignacionesRes.data || [],
     order_counts

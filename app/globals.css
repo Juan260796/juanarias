@@ -712,3 +712,247 @@ box-shadow:0 0 0 3px rgba(0,132,255,.25);
   color: #f1f5f9;
   word-break: break-word;
 }
+
+/* Filtros de cuentas */
+.accountFilters{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  width:100%;
+  margin:18px 0 22px;
+}
+
+.accountFilters select,
+.accountFilters input{
+  height:46px;
+  border:1px solid #175994;
+  border-radius:10px;
+  background:#071526;
+  color:#dbeafe;
+  padding:0 14px;
+  font-size:15px;
+  outline:none;
+  box-sizing:border-box;
+}
+
+.accountFilters select{
+  min-width:190px;
+  cursor:pointer;
+  font-weight:600;
+  color:#dbeafe;
+}
+
+.accountFilters input{
+  flex:1;
+  min-width:220px;
+}
+
+.accountFilters input::placeholder{
+  color:#7f9abb;
+}
+
+.accountFilters select:focus,
+.accountFilters input:focus{
+  border-color:#18a8ff;
+  box-shadow:0 0 0 2px #18a8ff22;
+}
+
+.accountFilters select option{
+  background:#071526;
+  color:#dbeafe;
+}
+
+/* Selector de fecha */
+.accountFilters input[type="date"]{
+  color-scheme:dark;
+  cursor:pointer;
+}
+
+/* Filtros en celular */
+@media(max-width:720px){
+  .accountFilters{
+    flex-direction:column;
+    align-items:stretch;
+    gap:8px;
+    margin:16px 0 20px;
+  }
+
+  .accountFilters select,
+  .accountFilters input{
+    width:100%;
+    min-width:0;
+  }
+}
+.accountFilters .accountSearch {
+  margin: 0 !important;
+  height: 46px !important;
+  align-self: center;
+}
+
+.accountFilters {
+  align-items: center;
+}
+
+.accountFilters select,
+.accountFilters input {
+  margin-top: 0 !important;
+  margin-bottom: 0 !important;
+}
+
+.profitGroup{
+  overflow:hidden;
+}
+
+.profitRowClickable{
+  cursor:pointer;
+  width:100%;
+  border:0;
+}
+
+.profitRowClickable:hover{
+  background:#0b1f36;
+}
+
+.profitRowAmount{
+  display:flex;
+  align-items:center;
+  gap:12px;
+}
+
+.profitChevron{
+  font-size:12px;
+  color:#63c7ff;
+}
+
+.profitDetails{
+  border-top:1px solid #173b60;
+  padding:8px 16px 14px;
+  background:#061321;
+}
+
+.profitDetailRow{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:16px;
+  padding:14px 4px;
+  border-bottom:1px solid #112b45;
+}
+
+.profitDetailRow:last-child{
+  border-bottom:0;
+}
+
+.profitDetailInfo{
+  display:flex;
+  flex-direction:column;
+  gap:4px;
+  min-width:0;
+}
+
+.profitDetailInfo strong{
+  color:#eef6ff;
+}
+
+.profitDetailInfo span{
+  color:#82a4c7;
+  font-size:14px;
+}
+
+.profitDetailActions{
+  display:flex;
+  align-items:center;
+  gap:12px;
+}
+
+.profitDetailActions strong{
+  color:#55e6ae;
+  white-space:nowrap;
+}
+
+.profitEditBox{
+  display:flex;
+  align-items:center;
+  gap:7px;
+}
+
+.profitEditBox input{
+  width:120px;
+  height:36px;
+  border:1px solid #175994;
+  border-radius:8px;
+  background:#071526;
+  color:#fff;
+  padding:0 10px;
+}
+
+@media(max-width:720px){
+  .profitDetailRow{
+    align-items:flex-start;
+    flex-direction:column;
+  }
+
+  .profitDetailActions,
+  .profitEditBox{
+    width:100%;
+  }
+
+  .profitDetailActions{
+    justify-content:space-between;
+  }
+
+  .profitEditBox input{
+    flex:1;
+    width:auto;
+  }
+}
+
+/* GANANCIAS - DISEÑO OSCURO */
+
+.profitGroup.card {
+  background: #101d30 !important;
+  border: 1px solid #254463 !important;
+  border-radius: 17px;
+  overflow: hidden;
+}
+
+.profitGroup .profitRow {
+  background: transparent !important;
+  color: #e8f2ff !important;
+}
+
+.profitGroup .profitRow span {
+  color: #e8f2ff !important;
+}
+
+.profitGroup .profitRow small {
+  color: #91a9c4 !important;
+}
+
+.profitGroup .profitRowAmount strong {
+  color: #55e5aa !important;
+}
+
+.profitGroup .profitDetails {
+  background: #0c1727 !important;
+  border-top: 1px solid #254463;
+  color: #e8f2ff;
+}
+
+.profitGroup .profitDetailRow {
+  background: transparent !important;
+  border-bottom: 1px solid #25384e;
+  color: #e8f2ff;
+}
+
+.profitGroup .profitDetailInfo strong {
+  color: #f1f7ff !important;
+}
+
+.profitGroup .profitDetailInfo span {
+  color: #91a9c4 !important;
+}
+
+.profitGroup .profitRow:hover {
+  background: #172b43 !important;
+}

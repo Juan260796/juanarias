@@ -186,16 +186,27 @@ const VIEW_TITLES = {
 const VALID_VIEWS = new Set(Object.keys(VIEW_TITLES));
 
 function whatsappNumber(value) {
-  const digits = String(value || "").replace(/\D/g, "");
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  // Los usuarios se escriben como @usuario y se conservan sin tratar como números.
+  if (raw.startsWith("@")) return "";
+  // Número nacional colombiano o número internacional, con espacios y símbolos opcionales.
+  if (!/^[+\d\s().-]+$/.test(raw)) return "";
+  const digits = raw.replace(/\D/g, "");
   if (digits.length === 10 && digits.startsWith("3")) return `57${digits}`;
-  return digits;
+  if (digits.length >= 8 && digits.length <= 15) return digits;
+  return "";
 }
 
-function whatsappUrl(number, message) {
-  const cleanNumber = whatsappNumber(number);
-  if (!cleanNumber) return "";
-
-  return `https://wa.me/${cleanNumber}?text=${encodeURIComponent(message || "")}`;
+function whatsappUrl(contacto, message = "") {
+  const raw = String(contacto || "").trim();
+  if (!raw) return "";
+  const number = whatsappNumber(raw);
+  const username = raw.replace(/^@/, "");
+  // No redirigir accidentalmente a un destinatario inválido.
+  if (!number && !/^[A-Za-z0-9._]{3,50}$/.test(username)) return "";
+  const target = number || username;
+  return `https://wa.me/${encodeURIComponent(target)}?text=${encodeURIComponent(message || "")}`;
 }
 
 function daysTone(days) {
@@ -217,13 +228,17 @@ function promotionIsToday(promo) {
   return promo?.activo !== false && String(promo?.fecha_inicio || "") <= today && String(promo?.fecha_fin || "") >= today;
 }
 
-
+function bloquearScrollNumerico(event) {
+  if (event.currentTarget === document.activeElement) {
+    event.currentTarget.blur();
+  }
+}
 
 export default function Admin() {
   const [serviceSearch, setServiceSearch] = useState("");
   const router = useRouter();
   const [token, setToken] = useState("");
-  const [data, setData] = useState({ clientes: [], servicios: [], suscripciones: [], ganancias: [], promociones: [], premios_fidelidad: [], inventario: [], inventario_historico: [], proveedores: [], asignaciones: [], order_counts: {} });
+  const [data, setData] = useState({ clientes: [], servicios: [], suscripciones: [], ganancias: [], promociones: [], premios_fidelidad: [], inventario: [], inventario_historico: [],inventario_externo: [], proveedores: [], asignaciones: [], order_counts: {} });
   const filteredServices = data.servicios.filter((service) =>
   service.nombre.toLowerCase().includes(serviceSearch.toLowerCase())
 );
@@ -245,6 +260,10 @@ const [providerSearch, setProviderSearch] = useState("");
   const [clientListQuery, setClientListQuery] = useState("");
   const [activeSearch, setActiveSearch] = useState("");
 const [expiredSearch, setExpiredSearch] = useState("");
+const [activeFilterField, setActiveFilterField] = useState("todos");
+const [activeFilterValue, setActiveFilterValue] = useState("");
+const [expiredFilterField, setExpiredFilterField] = useState("todos");
+const [expiredFilterValue, setExpiredFilterValue] = useState("");
   const [showClientCreateInline, setShowClientCreateInline] = useState(false);
   const [clientForm, setClientForm] = useState({ nombre: "", username: "", telefono: "", password: "" });
   const [serviceForm, setServiceForm] = useState({ nombre: "", descripcion: "", duracion_tipo: "meses", duracion_cantidad: 1, tipo_entrega: "estandar" });
@@ -257,11 +276,15 @@ const [expiredSearch, setExpiredSearch] = useState("");
 });
   const [profitValue, setProfitValue] = useState("");
   const [profitTab, setProfitTab] = useState("diaria");
+  const [expandedProfitDay, setExpandedProfitDay] = useState("");
+const [editingProfitId, setEditingProfitId] = useState("");
+const [profitEditValue, setProfitEditValue] = useState("");
   const [editingClientId, setEditingClientId] = useState("");
   const [clientEditForm, setClientEditForm] = useState({ nombre: "", username: "", telefono: "", password: "" });
   const [editingServiceId, setEditingServiceId] = useState("");
   const [serviceEditForm, setServiceEditForm] = useState({ nombre: "", descripcion: "", activo: true, duracion_tipo: "meses", duracion_cantidad: 1, tipo_entrega: "estandar" });
   const [renewalDrafts, setRenewalDrafts] = useState({});
+  const [renewalProfits, setRenewalProfits] = useState({});
   const [renewMenuId, setRenewMenuId] = useState("");
   const [renewAccountMode, setRenewAccountMode] = useState({});
   const [renewSelectedInventory,setRenewSelectedInventory] = useState({});
@@ -528,11 +551,16 @@ const [expiredSearch, setExpiredSearch] = useState("");
   const activeAssignmentBySubscription = useMemo(() => {
   const map = {};
 
+  const allInventory = [
+    ...(data.inventario || []),
+    ...(data.inventario_externo || [])
+  ];
+
   for (const assignment of (data.asignaciones || [])) {
     if (!assignment.activo) continue;
 
     const item =
-      (data.inventario || []).find(
+      allInventory.find(
         (account) => account.id === assignment.inventario_id
       ) || null;
 
@@ -543,7 +571,11 @@ const [expiredSearch, setExpiredSearch] = useState("");
   }
 
   return map;
-}, [data.asignaciones, data.inventario]);
+}, [
+  data.asignaciones,
+  data.inventario,
+  data.inventario_externo
+]);
 
   const availableInventory = useMemo(() => {
     const createdTime = (item) => {
@@ -1070,6 +1102,12 @@ const [expiredSearch, setExpiredSearch] = useState("");
 
   function beginInventoryEdit(item) {
   setEditingInventoryId(item.id);
+  // Esperamos a que React muestre el formulario antes de desplazar la pantalla.
+  window.requestAnimationFrame(() => {
+    window.requestAnimationFrame(() => {
+      document.getElementById("inventory-edit-form")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  });
   setInventoryEditForm({
     servicio_id: item.servicio_id || "",
     proveedor_id: item.proveedor_id || "",
@@ -1184,15 +1222,10 @@ CORREO: ${item.correo || ""}
 CLAVE: ${item.clave || ""}${profileLine}${pinLine}
 
 ¡IMPORTANTE!
-
 ⚠️ Uso apropiado
-
 ❌ No cambiar nombres
-
 ❌ No usarla en más de 1 dispositivo a la vez
-
 ❌ Prohibido compartir la pantalla con otras personas
-
 🚫 Si viola alguna de las reglas, la pantalla quedará suspendida. 🚫
 
 ${cliente}`);
@@ -1706,6 +1739,12 @@ function setRenewSameAccountSlotValue(id, value) {
       setError(`Escribe una cantidad entre 1 y ${max}.`);
       return;
     }
+    const profitRaw = String(renewalProfits[s.id] ?? "").trim();
+    const gananciaRenovacion = Number(profitRaw);
+    if (profitRaw === "" || !Number.isFinite(gananciaRenovacion) || gananciaRenovacion < 0) {
+      setError("Escribe la ganancia neta de esta renovación (puede ser 0).");
+      return;
+    }
     const fecha_inicio = todayISO();
 const fecha_vencimiento = addDuration(fecha_inicio, draft.tipo, rawQty);
 const cambiarCuenta = getRenewAccountMode(s.id) === "nueva";
@@ -1734,9 +1773,11 @@ if (cambiarCuenta && (!nuevoInventarioId || !nuevoCupo)) {
   reporte_vencimiento: false,
   fecha_reporte: null,
   es_renovacion: true,
+  ganancia_renovacion: gananciaRenovacion,
   cambiar_cuenta: cambiarCuenta,
   nuevo_inventario_id: nuevoInventarioId,
-  nuevo_cupo: nuevoCupo
+  nuevo_cupo: nuevoCupo,
+  perfil_misma_cuenta: cambiarCuenta ? null : (renewSameAccountSlot[s.id] || "mismo")
 }
 
 ) }),
@@ -1889,7 +1930,7 @@ if (cambiarCuenta && (!nuevoInventarioId || !nuevoCupo)) {
         <label>Cantidad
           <input
             aria-label={`${prefix} cantidad`}
-            type="number"
+            type="number" onWheel={bloquearScrollNumerico}
             inputMode="numeric"
             min="1"
             max={max}
@@ -1923,7 +1964,7 @@ if (cambiarCuenta && (!nuevoInventarioId || !nuevoCupo)) {
           </select>
         </label>
         <label>Cantidad
-          <input type="number" inputMode="numeric" min="1" max={max} required value={form.duracion_cantidad} onChange={(e) => setter({ ...form, duracion_tipo: tipo, duracion_cantidad: e.target.value })} onBlur={() => {
+          <input type="number" onWheel={bloquearScrollNumerico} inputMode="numeric" min="1" max={max} required value={form.duracion_cantidad} onChange={(e) => setter({ ...form, duracion_tipo: tipo, duracion_cantidad: e.target.value })} onBlur={() => {
             const parsed = Number(form.duracion_cantidad);
             const fixed = Number.isInteger(parsed) && parsed >= 1 ? Math.min(parsed, max) : 1;
             setter({ ...form, duracion_tipo: tipo, duracion_cantidad: fixed });
@@ -2156,7 +2197,7 @@ Cuenta para renovación
             </label>
             <label>Cantidad
               <input
-                type="number"
+                type="number" onWheel={bloquearScrollNumerico}
                 inputMode="numeric"
                 min="1"
                 max={max}
@@ -2169,6 +2210,13 @@ Cuenta para renovación
                   const fixed = Number.isInteger(parsed) && parsed >= 1 ? Math.min(parsed, max) : 1;
                   setRenewalDraft(s.id, { cantidad: fixed });
                 }}
+              />
+            </label>
+            <label>Ganancia neta de esta renovación (COP)
+              <input type="number" onWheel={bloquearScrollNumerico} min="0" step="1" inputMode="numeric"
+                placeholder="Ej. 8000"
+                value={renewalProfits[s.id] ?? ""}
+                onChange={(e) => setRenewalProfits((prev) => ({ ...prev, [s.id]: e.target.value }))}
               />
             </label>
             <button type="button" className="miniButton primaryMini" disabled={working} onClick={() => renewSubscription(s)}>Aplicar renovación</button>
@@ -2198,7 +2246,7 @@ Cuenta para renovación
               </select>
             </label>
             <label>Cantidad
-              <input type="number" inputMode="numeric" min="1" max={max} value={draft.cantidad} onChange={(e) => setInventoryRenewalDraft(item.id, { cantidad: e.target.value })} />
+              <input type="number" onWheel={bloquearScrollNumerico} inputMode="numeric" min="1" max={max} value={draft.cantidad} onChange={(e) => setInventoryRenewalDraft(item.id, { cantidad: e.target.value })} />
             </label>
             <button type="button" className="miniButton primaryMini" disabled={working} onClick={() => renewInventoryAccount(item)}>Aplicar renovación</button>
           </div>
@@ -2208,8 +2256,7 @@ Cuenta para renovación
   }
 
   function whatsappHref(s) {
-    const number = whatsappNumber(s.cliente?.telefono);
-    if (!number) return "";
+    if (!whatsappUrl(s.cliente?.telefono)) return "";
 
     const cliente = s.cliente?.nombre || s.cliente?.username || "cliente";
     const servicio = s.servicio?.nombre || "servicio";
@@ -2234,12 +2281,11 @@ Cuenta para renovación
         `Si deseas renovarlo, estoy atento a tu solicitud.`;
     }
 
-    return whatsappUrl(number, message);
+    return whatsappUrl(s.cliente?.telefono, message);
 }
 
   function clientWhatsappHref(cliente) {
-    const number = whatsappNumber(cliente?.telefono);
-    return number ? `https://wa.me/${number}` : "";
+    return whatsappUrl(cliente?.telefono);
   }
 
   function accountStatus(s) {
@@ -2296,7 +2342,7 @@ Cuenta para renovación
   </select>
 ) : s.servicio?.nombre || "Servicio"}</td>
                       <td>{editing && assignment ? (
-                        <input className="smallNumberInput" type="number" min="1" inputMode="numeric" value={subscriptionEditForm.cupo_numero} onChange={(e) => setSubscriptionEditForm((prev) => ({ ...prev, cupo_numero: e.target.value }))} />
+                        <input className="smallNumberInput" type="number" onWheel={bloquearScrollNumerico} min="1" inputMode="numeric" value={subscriptionEditForm.cupo_numero} onChange={(e) => setSubscriptionEditForm((prev) => ({ ...prev, cupo_numero: e.target.value }))} />
                       ) : assignment ? `${effectiveDeliveryType(s.servicio) === "estandar" ? "Perfil" : "Cupo"} ${assignment.cupo_numero}` : "—"}</td>
                       <td>
   {assignment?.item ? (
@@ -2424,7 +2470,6 @@ Cuenta para renovación
     )
   : calculatedExpiry;
     const orderWhatsapp = generatedDelivery?.cliente?.telefono
-    
       ? whatsappUrl(generatedDelivery.cliente.telefono, generatedDelivery.text)
       : "";
       
@@ -2453,7 +2498,7 @@ Cuenta para renovación
         }}>
           <div className="formSectionTitle"><span>1</span><div><h2>Cliente</h2><p>Escribe el nombre y selecciona una coincidencia.</p></div></div>
           <div className="autocompleteWrap">
-            <input autoComplete="off" placeholder="Buscar cliente por nombre, usuario o celular" value={clientQuery} onFocus={() => setShowClientMatches(true)} onBlur={() => setTimeout(() => setShowClientMatches(false), 160)} onChange={(e) => handleClientQuery(e.target.value)} required />
+            <input autoComplete="off" placeholder="Buscar cliente por nombre, usuario o WhatsApp" value={clientQuery} onFocus={() => setShowClientMatches(true)} onBlur={() => setTimeout(() => setShowClientMatches(false), 160)} onChange={(e) => handleClientQuery(e.target.value)} required />
             {showClientMatches && clientMatches.length > 0 && (
               <div className="autocompleteMenu">
                 {clientMatches.map((c) => (
@@ -2477,7 +2522,7 @@ Cuenta para renovación
                 <div className="twoCols">
                   <label>Nombre<input value={clientForm.nombre} onChange={(e)=>setClientForm({...clientForm,nombre:e.target.value})}/></label>
                   <label>Usuario<input value={clientForm.username} onChange={(e)=>setClientForm({...clientForm,username:e.target.value})}/></label>
-                  <label>Celular<input value={clientForm.telefono} onChange={(e)=>setClientForm({...clientForm,telefono:e.target.value})}/></label>
+                  <label>Teléfono / usuario WhatsApp<input value={clientForm.telefono} onChange={(e)=>setClientForm({...clientForm,telefono:e.target.value})}/></label>
                   <label>Contraseña<input value={clientForm.password} onChange={(e)=>setClientForm({...clientForm,password:e.target.value})}/></label>
                 </div>
                 <button type="button" className="button primary" onClick={createClient}>Guardar cliente y continuar pedido</button>
@@ -2580,7 +2625,7 @@ Cuenta para renovación
               <div className="threeCols externalCredentialGrid">
                 <label>Contraseña (opcional)<input placeholder="Si aplica" value={externalOrderForm.clave} onChange={(e) => setExternalOrderForm((prev) => ({ ...prev, clave: e.target.value }))} /></label>
                 <label>{selectedType === "estandar" || selectedType === "manual" ? "Número de perfil" : "Número de cupo"}
-                  <input type="number" inputMode="numeric" min="1" max="50" value={externalOrderForm.perfil} onChange={(e) => setExternalOrderForm((prev) => ({ ...prev, perfil: e.target.value }))} required />
+                  <input type="number" onWheel={bloquearScrollNumerico} inputMode="numeric" min="1" max="50" value={externalOrderForm.perfil} onChange={(e) => setExternalOrderForm((prev) => ({ ...prev, perfil: e.target.value }))} required />
                 </label>
                 <label>PIN (opcional)<input inputMode="numeric" placeholder="Si aplica" value={externalOrderForm.pin} onChange={(e) => setExternalOrderForm((prev) => ({ ...prev, pin: e.target.value }))} /></label>
               </div>
@@ -2609,7 +2654,7 @@ Cuenta para renovación
 
           <div className="formSectionTitle"><span>5</span><div><h2>Ganancia neta del pedido</h2><p>Escribe únicamente lo que este pedido te deja de ganancia en pesos. Ese será el valor usado en los reportes.</p></div></div>
           <label className="profitInputLabel">Ganancia neta (COP)
-            <div className="moneyInputWrap"><span>$</span><input type="number" inputMode="numeric" min="0" step="1" placeholder="Ej. 12000" value={profitValue} onChange={(e) => setProfitValue(e.target.value)} required /></div>
+            <div className="moneyInputWrap"><span>$</span><input type="number" onWheel={bloquearScrollNumerico} inputMode="numeric" min="0" step="1" placeholder="Ej. 12000" value={profitValue} onChange={(e) => setProfitValue(e.target.value)} required /></div>
           </label>
 
           <button className="button primary orderSubmit" disabled={working || profitValue === "" || Number(profitValue) < 0 || !subForm.cliente_id || !subForm.servicio_id || (orderUsesInventory && (!deliveryForm.inventario_id || !deliveryForm.cupo_numero)) || (orderUsesExternal && (!String(externalOrderForm.correo || "").trim() || !Number(externalOrderForm.perfil)))}>
@@ -2646,20 +2691,133 @@ Cuenta para renovación
     );
   }
 
-  function renderActivas() {
+  function accountSearchText(s) {
+  const assignment = activeAssignmentBySubscription[s.id];
+  const item = assignment?.item || {};
+  const status = accountStatus(s);
+
+  return [
+    // Cliente
+    s.cliente?.nombre,
+    s.cliente?.username,
+    s.cliente?.telefono,
+
+    // Servicio
+    s.servicio?.nombre,
+    s.servicio?.tipo_entrega,
+    s.servicio?.duracion_tipo,
+    s.servicio?.duracion_cantidad,
+
+    // Pedido
+    s.fecha_inicio,
+    s.fecha_vencimiento,
+    s.ganancia_neta,
+    s.fecha_ganancia,
+    s.fecha_reporte,
+    s.fecha_inicio,
+s.fecha_inicio ? formatDate(s.fecha_inicio) : "",
+s.fecha_vencimiento,
+s.fecha_vencimiento ? formatDate(s.fecha_vencimiento) : "",
+
+    // Perfil / cupo
+    assignment?.cupo_numero,
+
+    // Credenciales
+    item.correo,
+    item.grupo,
+    item.clave,
+    item.pin,
+
+    // PIN por perfil
+    ...Object.values(item.perfiles_pins || {}),
+
+    // Inventario
+    item.fecha_carga,
+    item.fecha_vencimiento,
+    item.estado,
+    item.etiqueta,
+    item.notas,
+    item.cupos_total,
+    item.duracion_tipo,
+    item.duracion_cantidad,
+
+    // Estado mostrado
+    status.text,
+    remainingText(s.days),
+    s.reporte_vencimiento ? "reportada" : "pendiente",
+
+    // Proveedor
+    item.proveedores?.iniciales,
+    item.proveedor?.iniciales
+  ]
+    .filter((value) => value !== null && value !== undefined)
+    .join(" ")
+    .toLowerCase();
+}
+
+function getAccountFilterValue(s, field) {
+  const assignment = activeAssignmentBySubscription[s.id];
+  const item = assignment?.item || {};
+
+  switch (field) {
+    case "cliente":
+      return s.cliente?.nombre || "";
+
+    case "usuario":
+      return s.cliente?.username || "";
+
+    case "telefono":
+      return s.cliente?.telefono || "";
+
+    case "servicio":
+      return s.servicio?.nombre || "";
+
+    case "tipo_cuenta":
+      if (item.etiqueta === "externa") return "por fuera";
+      if (!item.id) return "sin credenciales";
+      return "stock";
+
+    case "correo":
+      return item.correo || assignment?.correo_cliente || "";
+
+    case "perfil":
+      return assignment?.cupo_numero || "";
+
+    case "proveedor":
+      return item.proveedores?.nombre || item.proveedor?.nombre || "";
+
+    case "fecha_inicio":
+      return s.fecha_inicio || "";
+
+    case "fecha_vencimiento":
+      return s.fecha_vencimiento || "";
+
+    case "estado":
+      return accountStatus(s).text || "";
+
+    default:
+      return accountSearchText(s);
+  }
+}
+
+ function renderActivas() {
 
 const filtered = activeSubs.filter((s) => {
-  const text = `
-    ${s.cliente?.nombre || ""}
-    ${s.cliente?.username || ""}
-    ${s.servicio?.nombre || ""}
-    ${s.cliente?.telefono || ""}
-    ${s.cupo_numero || ""}
-  `.toLowerCase();
+  const value = String(
+    getAccountFilterValue(s, activeFilterField)
+  ).toLowerCase().trim();
 
-  return text.includes(activeSearch.toLowerCase());
+  const search = activeFilterValue.toLowerCase().trim();
+
+  if (!search) return true;
+
+  if (activeFilterField === "fecha_inicio" ||
+      activeFilterField === "fecha_vencimiento") {
+    return value === search;
+  }
+
+  return value.includes(search);
 });
-
 return (
 <>
 <div className="pageHeading">
@@ -2669,12 +2827,66 @@ return (
 Solo aparecen cuentas con 1 día o más restante.
 </p>
 
-<input
-className="accountSearch"
-placeholder="🔎 Buscar cliente, servicio o correo..."
-value={activeSearch}
-onChange={(e)=>setActiveSearch(e.target.value)}
-/>
+<div className="accountFilters">
+
+  <select
+    value={activeFilterField}
+    onChange={(e) => {
+      setActiveFilterField(e.target.value);
+      setActiveFilterValue("");
+    }}
+  >
+    <option value="todos">Todos</option>
+    <option value="cliente">Cliente</option>
+    <option value="usuario">Usuario</option>
+    <option value="telefono">Teléfono</option>
+    <option value="servicio">Servicio</option>
+    <option value="tipo_cuenta">Tipo de cuenta</option>
+    <option value="correo">Correo</option>
+    <option value="perfil">Perfil / cupo</option>
+    <option value="proveedor">Proveedor</option>
+    <option value="fecha_inicio">Fecha de inicio</option>
+    <option value="fecha_vencimiento">Fecha de vencimiento</option>
+    <option value="estado">Estado</option>
+  </select>
+
+  {activeFilterField === "fecha_inicio" ||
+   activeFilterField === "fecha_vencimiento" ? (
+    <input
+      type="date"
+      value={activeFilterValue}
+      onChange={(e) => setActiveFilterValue(e.target.value)}
+    />
+  ) : activeFilterField === "tipo_cuenta" ? (
+    <select
+      value={activeFilterValue}
+      onChange={(e) => setActiveFilterValue(e.target.value)}
+    >
+      <option value="">Todas</option>
+      <option value="stock">Stock</option>
+      <option value="por fuera">Por fuera</option>
+      <option value="sin credenciales">Sin credenciales</option>
+    </select>
+  ) : activeFilterField === "estado" ? (
+    <select
+      value={activeFilterValue}
+      onChange={(e) => setActiveFilterValue(e.target.value)}
+    >
+      <option value="">Todos</option>
+      <option value="activo">Activo</option>
+      <option value="vencido">Vencido</option>
+      <option value="suspendido">Suspendido</option>
+    </select>
+  ) : (
+    <input
+      className="accountSearch"
+      placeholder="🔎 Escribe para buscar..."
+      value={activeFilterValue}
+      onChange={(e) => setActiveFilterValue(e.target.value)}
+    />
+  )}
+
+</div>
 
 </div>
 
@@ -2685,17 +2897,21 @@ onChange={(e)=>setActiveSearch(e.target.value)}
   function renderVencidas() {
 
 const filtered = expiredSubs.filter((s) => {
- const text = `
- ${s.cliente?.nombre || ""}
- ${s.cliente?.username || ""}
- ${s.servicio?.nombre || ""}
- ${s.cliente?.telefono || ""}
- ${s.cupo_numero || ""}
- `.toLowerCase();
+  const value = String(
+    getAccountFilterValue(s, expiredFilterField)
+  ).toLowerCase().trim();
 
- return text.includes(expiredSearch.toLowerCase());
+  const search = expiredFilterValue.toLowerCase().trim();
+
+  if (!search) return true;
+
+  if (expiredFilterField === "fecha_inicio" ||
+      expiredFilterField === "fecha_vencimiento") {
+    return value === search;
+  }
+
+  return value.includes(search);
 });
-
 
 return (
 <>
@@ -2703,12 +2919,66 @@ return (
 <p className="muted">Alertas</p>
 <h1>Cuentas vencidas</h1>
 
-<input
-className="accountSearch"
-placeholder="🔎 Buscar cuenta vencida..."
-value={expiredSearch}
-onChange={(e)=>setExpiredSearch(e.target.value)}
-/>
+<div className="accountFilters">
+
+  <select
+    value={expiredFilterField}
+    onChange={(e) => {
+      setExpiredFilterField(e.target.value);
+      setExpiredFilterValue("");
+    }}
+  >
+    <option value="todos">Todos</option>
+    <option value="cliente">Cliente</option>
+    <option value="usuario">Usuario</option>
+    <option value="telefono">Teléfono</option>
+    <option value="servicio">Servicio</option>
+    <option value="tipo_cuenta">Tipo de cuenta</option>
+    <option value="correo">Correo</option>
+    <option value="perfil">Perfil / cupo</option>
+    <option value="proveedor">Proveedor</option>
+    <option value="fecha_inicio">Fecha de inicio</option>
+    <option value="fecha_vencimiento">Fecha de vencimiento</option>
+    <option value="estado">Estado</option>
+  </select>
+
+  {expiredFilterField === "fecha_inicio" ||
+   expiredFilterField === "fecha_vencimiento" ? (
+    <input
+      type="date"
+      value={expiredFilterValue}
+      onChange={(e) => setExpiredFilterValue(e.target.value)}
+    />
+  ) : expiredFilterField === "tipo_cuenta" ? (
+    <select
+      value={expiredFilterValue}
+      onChange={(e) => setExpiredFilterValue(e.target.value)}
+    >
+      <option value="">Todas</option>
+      <option value="stock">Stock</option>
+      <option value="por fuera">Por fuera</option>
+      <option value="sin credenciales">Sin credenciales</option>
+    </select>
+  ) : expiredFilterField === "estado" ? (
+    <select
+      value={expiredFilterValue}
+      onChange={(e) => setExpiredFilterValue(e.target.value)}
+    >
+      <option value="">Todos</option>
+      <option value="activo">Activo</option>
+      <option value="vencido">Vencido</option>
+      <option value="suspendido">Suspendido</option>
+    </select>
+  ) : (
+    <input
+      className="accountSearch"
+      placeholder="🔎 Escribe para buscar..."
+      value={expiredFilterValue}
+      onChange={(e) => setExpiredFilterValue(e.target.value)}
+    />
+  )}
+
+</div>
 
 </div>
 
@@ -2717,56 +2987,376 @@ onChange={(e)=>setExpiredSearch(e.target.value)}
 );
 }
 
-  function renderGanancias() {
-    const rows = (data.ganancias || []).filter((item) => item.ganancia_neta !== null && item.ganancia_neta !== undefined && item.ganancia_neta !== "" && Number.isFinite(Number(item.ganancia_neta)));
-    const money = (value) => new Intl.NumberFormat("es-CO", { style: "currency", currency: "COP", maximumFractionDigits: 0 }).format(Number(value || 0));
-    const addDaysLocal = (iso, days) => { const date = parseISO(iso); date.setDate(date.getDate() + days); return toISO(date); };
-    const weekStart = (iso) => { const date = parseISO(iso); const diff = (date.getDay() + 6) % 7; date.setDate(date.getDate() - diff); return toISO(date); };
-    const longDay = (iso) => new Intl.DateTimeFormat("es-CO", { weekday: "long", day: "numeric", month: "long", year: "numeric" }).format(parseISO(iso));
-    const monthName = (key) => { const value = new Intl.DateTimeFormat("es-CO", { month: "long", year: "numeric" }).format(parseISO(`${key}-01`)); return value.charAt(0).toUpperCase() + value.slice(1); };
+async function saveProfitEdit(item) {
+  const value = Number(profitEditValue);
 
-    const group = (keyFn, labelFn) => {
-      const map = new Map();
-      for (const item of rows) {
-        const date = item.fecha_ganancia || item.fecha_inicio;
-        if (!date) continue;
-        const key = keyFn(date);
-        const current = map.get(key) || { key, total: 0, pedidos: 0 };
-        current.total += Number(item.ganancia_neta || 0);
-        current.pedidos += 1;
-        map.set(key, current);
-      }
-      return [...map.values()].sort((a, b) => b.key.localeCompare(a.key)).map((item) => ({ ...item, label: labelFn(item.key) }));
-    };
-
-    const daily = group((date) => date, (key) => longDay(key));
-    const weekly = group((date) => weekStart(date), (key) => `Semana del ${formatDate(key)} al ${formatDate(addDaysLocal(key, 6))}`);
-    const monthly = group((date) => String(date).slice(0, 7), (key) => monthName(key));
-    const visible = profitTab === "semanal" ? weekly : profitTab === "mensual" ? monthly : daily;
-    const today = todayISO();
-    const currentKey = profitTab === "semanal" ? weekStart(today) : profitTab === "mensual" ? today.slice(0, 7) : today;
-    const current = visible.find((item) => item.key === currentKey);
-    const currentTotal = current?.total || 0;
-    const currentLabel = profitTab === "semanal" ? "Ganancia de esta semana" : profitTab === "mensual" ? `Ganancia de ${monthName(currentKey)}` : "Ganancia de hoy";
-
-    return (
-      <>
-        <div className="pageHeading"><p className="muted">Resultados</p><h1>Ganancias</h1><p className="pageLead">Los totales salen únicamente de la ganancia neta que registras al crear cada pedido.</p></div>
-        {data.ganancias_configuradas === false && <div className="card emptyState">La base de datos todavía no tiene activados los campos de ganancias. Ejecuta <strong>MIGRACION_V38_DESDE_V37.sql</strong> en Supabase. Los clientes y demás datos seguirán visibles mientras tanto.</div>}
-        <div className="profitTabs">
-          <button type="button" className={profitTab === "diaria" ? "active" : ""} onClick={() => setProfitTab("diaria")}>Diaria</button>
-          <button type="button" className={profitTab === "semanal" ? "active" : ""} onClick={() => setProfitTab("semanal")}>Semanal</button>
-          <button type="button" className={profitTab === "mensual" ? "active" : ""} onClick={() => setProfitTab("mensual")}>Mensual</button>
-        </div>
-        <section className="card profitHero"><span>{currentLabel}</span><strong>{money(currentTotal)}</strong><small>{current?.pedidos || 0} pedido(s) en este período · {rows.length} pedido(s) con ganancia registrada en total</small></section>
-        {visible.length === 0 ? <div className="card emptyState">Todavía no hay ganancias registradas.</div> : (
-          <div className="profitList">
-            {visible.map((item) => <article className="card profitRow" key={item.key}><div><span>{item.label}</span><small>{item.pedidos} pedido(s)</small></div><strong>{money(item.total)}</strong></article>)}
-          </div>
-        )}
-      </>
-    );
+  if (!Number.isFinite(value) || value < 0) {
+    setError("Escribe una ganancia válida.");
+    return;
   }
+
+  await runAction(
+    () =>
+      api("/api/admin/suscripciones", {
+        method: "PATCH",
+        body: JSON.stringify({
+          id: item.id,
+          action: "editar_ganancia",
+          es_ganancia_renovacion: item.es_renovacion === true,
+          ganancia_neta: value
+        })
+      }),
+    "Ganancia actualizada correctamente."
+  );
+
+  setEditingProfitId("");
+  setProfitEditValue("");
+}
+
+  function renderGanancias() {
+  const rows = (data.ganancias || [])
+    .filter(
+      (item) =>
+        item.ganancia_neta !== null &&
+        item.ganancia_neta !== undefined &&
+        item.ganancia_neta !== "" &&
+        Number.isFinite(Number(item.ganancia_neta))
+    )
+    .map((item) => {
+      const subscription =
+        (data.suscripciones || []).find((s) => s.id === item.id) || {};
+
+      return {
+        ...item,
+        cliente: item.cliente || subscription.cliente || null,
+        servicio: item.servicio || subscription.servicio || null
+      };
+    });
+
+  const money = (value) =>
+    new Intl.NumberFormat("es-CO", {
+      style: "currency",
+      currency: "COP",
+      maximumFractionDigits: 0
+    }).format(Number(value || 0));
+
+  const addDaysLocal = (iso, days) => {
+    const date = parseISO(iso);
+    date.setDate(date.getDate() + days);
+    return toISO(date);
+  };
+
+  const weekStart = (iso) => {
+    const date = parseISO(iso);
+    const diff = (date.getDay() + 6) % 7;
+    date.setDate(date.getDate() - diff);
+    return toISO(date);
+  };
+
+  const longDay = (iso) =>
+    new Intl.DateTimeFormat("es-CO", {
+      weekday: "long",
+      day: "numeric",
+      month: "long",
+      year: "numeric"
+    }).format(parseISO(iso));
+
+  const monthName = (key) => {
+    const value = new Intl.DateTimeFormat("es-CO", {
+      month: "long",
+      year: "numeric"
+    }).format(parseISO(`${key}-01`));
+
+    return value.charAt(0).toUpperCase() + value.slice(1);
+  };
+
+  const group = (keyFn, labelFn) => {
+    const map = new Map();
+
+    for (const item of rows) {
+      const date = item.fecha_ganancia || item.fecha_inicio;
+      if (!date) continue;
+
+      const key = keyFn(date);
+
+      const current =
+        map.get(key) || {
+          key,
+          total: 0,
+          pedidos: 0,
+          items: []
+        };
+
+      current.total += Number(item.ganancia_neta || 0);
+      current.pedidos += 1;
+      current.items.push(item);
+
+      map.set(key, current);
+    }
+
+    return [...map.values()]
+      .sort((a, b) => b.key.localeCompare(a.key))
+      .map((item) => ({
+        ...item,
+        items: item.items.sort((a, b) =>
+          String(a.cliente?.nombre || "").localeCompare(
+            String(b.cliente?.nombre || ""),
+            "es"
+          )
+        ),
+        label: labelFn(item.key)
+      }));
+  };
+
+  const daily = group(
+    (date) => date,
+    (key) => longDay(key)
+  );
+
+  const weekly = group(
+    (date) => weekStart(date),
+    (key) =>
+      `Semana del ${formatDate(key)} al ${formatDate(
+        addDaysLocal(key, 6)
+      )}`
+  );
+
+  const monthly = group(
+    (date) => String(date).slice(0, 7),
+    (key) => monthName(key)
+  );
+
+  const visible =
+    profitTab === "semanal"
+      ? weekly
+      : profitTab === "mensual"
+      ? monthly
+      : daily;
+
+  const today = todayISO();
+
+  const currentKey =
+    profitTab === "semanal"
+      ? weekStart(today)
+      : profitTab === "mensual"
+      ? today.slice(0, 7)
+      : today;
+
+  const current = visible.find(
+    (item) => item.key === currentKey
+  );
+
+  const currentTotal = current?.total || 0;
+
+  const currentLabel =
+    profitTab === "semanal"
+      ? "Ganancia de esta semana"
+      : profitTab === "mensual"
+      ? `Ganancia de ${monthName(currentKey)}`
+      : "Ganancia de hoy";
+
+  return (
+    <>
+      <div className="pageHeading">
+        <p className="muted">Resultados</p>
+        <h1>Ganancias</h1>
+        <p className="pageLead">
+          Los totales incluyen las ganancias netas de los pedidos y de cada renovación, sin reemplazar valores anteriores.
+        </p>
+      </div>
+
+      {data.ganancias_configuradas === false && (
+        <div className="card emptyState">
+          La base de datos todavía no tiene activados los campos
+          de ganancias. Ejecuta{" "}
+          <strong>MIGRACION_V38_DESDE_V37.sql</strong>.
+        </div>
+      )}
+
+      <div className="profitTabs">
+        <button
+          type="button"
+          className={profitTab === "diaria" ? "active" : ""}
+          onClick={() => {
+            setProfitTab("diaria");
+            setExpandedProfitDay("");
+          }}
+        >
+          Diaria
+        </button>
+
+        <button
+          type="button"
+          className={profitTab === "semanal" ? "active" : ""}
+          onClick={() => {
+            setProfitTab("semanal");
+            setExpandedProfitDay("");
+          }}
+        >
+          Semanal
+        </button>
+
+        <button
+          type="button"
+          className={profitTab === "mensual" ? "active" : ""}
+          onClick={() => {
+            setProfitTab("mensual");
+            setExpandedProfitDay("");
+          }}
+        >
+          Mensual
+        </button>
+      </div>
+
+      <section className="card profitHero">
+        <span>{currentLabel}</span>
+        <strong>{money(currentTotal)}</strong>
+        <small>
+          {current?.pedidos || 0} pedido(s) en este período ·{" "}
+          {rows.length} pedido(s) con ganancia registrada en total
+        </small>
+      </section>
+
+      {visible.length === 0 ? (
+        <div className="card emptyState">
+          Todavía no hay ganancias registradas.
+        </div>
+      ) : (
+        <div className="profitList">
+          {visible.map((item) => {
+            const isDaily = profitTab === "diaria";
+            const expanded =
+              isDaily && expandedProfitDay === item.key;
+
+            return (
+              <article className="card profitGroup" key={item.key}>
+                <button
+                  type="button"
+                  className={`profitRow ${
+                    isDaily ? "profitRowClickable" : ""
+                  }`}
+                  onClick={() => {
+                    if (!isDaily) return;
+
+                    setExpandedProfitDay(
+                      expanded ? "" : item.key
+                    );
+                  }}
+                >
+                  <div>
+                    <span>{item.label}</span>
+                    <small>
+                      {item.pedidos} pedido(s)
+                    </small>
+                  </div>
+
+                  <div className="profitRowAmount">
+                    <strong>{money(item.total)}</strong>
+                    {isDaily && (
+                      <span className="profitChevron">
+                        {expanded ? "▲" : "▼"}
+                      </span>
+                    )}
+                  </div>
+                </button>
+
+                {expanded && (
+                  <div className="profitDetails">
+                    {item.items.map((order) => {
+                      const editing =
+                        editingProfitId === order.id;
+
+                      return (
+                        <div
+                          className="profitDetailRow"
+                          key={order.id}
+                        >
+                          <div className="profitDetailInfo">
+                            <strong>
+                              {order.cliente?.nombre ||
+                                "Cliente"}
+                            </strong>
+
+                            <span>
+                              {order.servicio?.nombre ||
+                                "Servicio"}
+                            </span>
+                          </div>
+
+                          {editing ? (
+                            <div className="profitEditBox">
+                              <input
+                                type="number" onWheel={bloquearScrollNumerico}
+                                min="0"
+                                value={profitEditValue}
+                                onChange={(e) =>
+                                  setProfitEditValue(
+                                    e.target.value
+                                  )
+                                }
+                                autoFocus
+                              />
+
+                              <button
+                                type="button"
+                                className="miniButton primaryMini"
+                                onClick={() =>
+                                  saveProfitEdit(order)
+                                }
+                                disabled={working}
+                              >
+                                Guardar
+                              </button>
+
+                              <button
+                                type="button"
+                                className="miniButton"
+                                onClick={() => {
+                                  setEditingProfitId("");
+                                  setProfitEditValue("");
+                                }}
+                              >
+                                Cancelar
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="profitDetailActions">
+                              <strong>
+                                {money(order.ganancia_neta)}
+                              </strong>
+
+                              <button
+                                type="button"
+                                className="miniButton"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setEditingProfitId(
+                                    order.id
+                                  );
+                                  setProfitEditValue(
+                                    String(
+                                      order.ganancia_neta ?? ""
+                                    )
+                                  );
+                                }}
+                              >
+                                Editar
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </article>
+            );
+          })}
+        </div>
+      )}
+    </>
+  );
+}
 
   function renderClientes() {
     return (
@@ -2782,7 +3372,7 @@ onChange={(e)=>setExpiredSearch(e.target.value)}
             <div className="quickClientGrid">
               <input placeholder="Nombre" value={clientForm.nombre} onChange={(e) => setClientForm({ ...clientForm, nombre: e.target.value })} required />
               <input placeholder="Usuario (ej. Alejandra45)" value={clientForm.username} onChange={(e) => setClientForm({ ...clientForm, username: e.target.value })} required />
-              <input placeholder="Celular" value={clientForm.telefono} onChange={(e) => setClientForm({ ...clientForm, telefono: e.target.value })} />
+              <input placeholder="Número o @usuario de WhatsApp" value={clientForm.telefono} onChange={(e) => setClientForm({ ...clientForm, telefono: e.target.value })} />
               <input placeholder="Contraseña inicial" type="password" minLength={6} value={clientForm.password} onChange={(e) => setClientForm({ ...clientForm, password: e.target.value })} required />
             </div>
             <button className="miniButton primaryMini" disabled={working}>{working ? "Creando..." : "Crear cliente"}</button>
@@ -2798,7 +3388,7 @@ onChange={(e)=>setExpiredSearch(e.target.value)}
                   {deleteMode["clientes"] && <th className="selectColumn">✓</th>}
                   <th>Nombre</th>
                   <th>Usuario</th>
-                  <th>Celular</th>
+                  <th>Teléfono / usuario WhatsApp</th>
                   <th>Servicios pedidos</th>
                   <th>Editar</th>
                   <th>WhatsApp</th>
@@ -2825,7 +3415,7 @@ onChange={(e)=>setExpiredSearch(e.target.value)}
                           <button type="button" className="miniButton dangerMini" disabled={working} onClick={() => beginDeleteSelection("clientes", cliente.id)}>Borrar</button>
                         </div>
                       </td>
-                      <td>{wa ? <a className="waTableButton" href={wa} target="_blank" rel="noreferrer">WhatsApp</a> : <span className="noPhone">Sin celular</span>}</td>
+                      <td>{wa ? <a className="waTableButton" href={wa} target="_blank" rel="noreferrer">WhatsApp</a> : <span className="noPhone">Sin WhatsApp</span>}</td>
                     </tr>
                   ) : (
                     <tr key={cliente.id}>
@@ -2842,7 +3432,7 @@ onChange={(e)=>setExpiredSearch(e.target.value)}
                           <button type="button" className="miniButton dangerMini" disabled={working} onClick={() => beginDeleteSelection("clientes", cliente.id)}>Borrar</button>
                         </div>
                       </td>
-                      <td>{wa ? <a className="waTableButton" href={wa} target="_blank" rel="noreferrer">WhatsApp</a> : <span className="noPhone">Sin celular</span>}</td>
+                      <td>{wa ? <a className="waTableButton" href={wa} target="_blank" rel="noreferrer">WhatsApp</a> : <span className="noPhone">Sin WhatsApp</span>}</td>
                     </tr>
                   );
                 })}
@@ -2862,7 +3452,7 @@ onChange={(e)=>setExpiredSearch(e.target.value)}
         <form className="card adminForm standaloneForm" onSubmit={createClient}>
           <input placeholder="Nombre" value={clientForm.nombre} onChange={(e) => setClientForm({ ...clientForm, nombre: e.target.value })} required />
           <input placeholder="Usuario (ej. Alejandra45)" value={clientForm.username} onChange={(e) => setClientForm({ ...clientForm, username: e.target.value })} required />
-          <input placeholder="Celular" value={clientForm.telefono} onChange={(e) => setClientForm({ ...clientForm, telefono: e.target.value })} />
+          <input placeholder="Número o @usuario de WhatsApp" value={clientForm.telefono} onChange={(e) => setClientForm({ ...clientForm, telefono: e.target.value })} />
           <input placeholder="Contraseña inicial" type="password" minLength={6} value={clientForm.password} onChange={(e) => setClientForm({ ...clientForm, password: e.target.value })} required />
           <button className="button primary" disabled={working}>{working ? "Creando..." : "Crear cliente"}</button>
         </form>
@@ -3133,7 +3723,7 @@ onChange={(e)=>setExpiredSearch(e.target.value)}
             </select>
           </label>
           <label>Cantidad
-            <input type="number" min="1" max={max} inputMode="numeric" value={form.duracion_cantidad} onChange={(e) => setter({ ...form, duracion_tipo: durationType, duracion_cantidad: e.target.value })} onBlur={() => {
+            <input type="number" onWheel={bloquearScrollNumerico} min="1" max={max} inputMode="numeric" value={form.duracion_cantidad} onChange={(e) => setter({ ...form, duracion_tipo: durationType, duracion_cantidad: e.target.value })} onBlur={() => {
   const parsed = Number(form.duracion_cantidad);
 
   const fixed =
@@ -3332,7 +3922,7 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
             <label className="numberProfilesTest">
   NÚMERO DE CUPOS / PERFILES
   <input
-    type="number"
+    type="number" onWheel={bloquearScrollNumerico}
     min="1"
     value={inventoryForm.cupos_total || ""}
     onChange={(e) =>
@@ -3450,7 +4040,7 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
                 {replacementService && replacementType === "estandar" && (
                   <>
                     <label>Número de perfiles
-                      <input type="number" min={Math.max(1, replacementSourceAssignments.length)} max="50" value={replacementAccountForm.cupos_total} onChange={(e) => setReplacementAccountForm({ ...replacementAccountForm, cupos_total: e.target.value })} onBlur={() => {
+                      <input type="number" onWheel={bloquearScrollNumerico} min={Math.max(1, replacementSourceAssignments.length)} max="50" value={replacementAccountForm.cupos_total} onChange={(e) => setReplacementAccountForm({ ...replacementAccountForm, cupos_total: e.target.value })} onBlur={() => {
                         const parsed = Number(replacementAccountForm.cupos_total);
                         const minimum = Math.max(1, replacementSourceAssignments.length);
                         setReplacementAccountForm((prev) => ({ ...prev, cupos_total: Number.isInteger(parsed) && parsed >= minimum ? Math.min(parsed, 50) : minimum }));
@@ -3549,8 +4139,9 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
 </div>
 
               {editingInventoryId && (
-                <form className="card adminForm inventoryEditPanel" onSubmit={saveInventoryEdit}>
+                <form id="inventory-edit-form" className="card adminForm inventoryEditPanel" style={{ scrollMarginTop: "100px" }} onSubmit={saveInventoryEdit}>
                   <h3>Editar cuenta</h3>
+                  <p className="pageLead" style={{ marginTop: "-6px", marginBottom: "14px" }}>Servicio: <strong>{editService?.nombre || "Servicio no identificado"}</strong></p>
                   <div className="twoCols">
 
   <label>
@@ -3612,7 +4203,7 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
   <label>
     Cantidad de tiempo
     <input
-      type="number"
+      type="number" onWheel={bloquearScrollNumerico}
       min="1"
       max={inventoryForm.duracion_tipo === "dias" ? 30 : undefined}
       value={inventoryEditForm.duracion_cantidad ?? ""}
@@ -3627,8 +4218,8 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
 
 </div>
                   <div className="twoCols"><input placeholder="Correo / acceso" value={inventoryEditForm.correo || ""} onChange={(e) => setInventoryEditForm({ ...inventoryEditForm, correo: e.target.value })} /><input placeholder="Grupo (Gemini)" value={inventoryEditForm.grupo || ""} onChange={(e) => setInventoryEditForm({ ...inventoryEditForm, grupo: e.target.value })} /></div>
-                  <div className="twoCols"><input placeholder="Clave" value={inventoryEditForm.clave || ""} onChange={(e) => setInventoryEditForm({ ...inventoryEditForm, clave: e.target.value })} /><label>Cantidad de tiempo<input type="number" min="1" max={inventoryEditForm.duracion_tipo === "dias" ? 30 : undefined} value={inventoryEditForm.duracion_cantidad || 1} onChange={(e) => setInventoryEditForm({ ...inventoryEditForm, duracion_cantidad: e.target.value })} /></label></div>
-                  <label>Cupos / perfiles<input type="number" min="1" max="50" value={inventoryEditForm.cupos_total || 1} onChange={(e) => setInventoryEditForm({ ...inventoryEditForm, cupos_total: e.target.value })} /></label>
+                  <div className="twoCols"><input placeholder="Clave" value={inventoryEditForm.clave || ""} onChange={(e) => setInventoryEditForm({ ...inventoryEditForm, clave: e.target.value })} /><label>Cantidad de tiempo<input type="number" onWheel={bloquearScrollNumerico} min="1" max={inventoryEditForm.duracion_tipo === "dias" ? 30 : undefined} value={inventoryEditForm.duracion_cantidad || 1} onChange={(e) => setInventoryEditForm({ ...inventoryEditForm, duracion_cantidad: e.target.value })} /></label></div>
+                  <label>Cupos / perfiles<input type="number" onWheel={bloquearScrollNumerico} min="1" max="50" value={inventoryEditForm.cupos_total || 1} onChange={(e) => setInventoryEditForm({ ...inventoryEditForm, cupos_total: e.target.value })} /></label>
                   {editType === "estandar" && (
                     <div className="profilePinsBox">
                       <div className="profilePinsTitle"><strong>PIN por perfil</strong><span>Edita cada PIN de forma independiente.</span></div>
