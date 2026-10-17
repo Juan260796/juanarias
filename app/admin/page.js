@@ -138,7 +138,7 @@ function isCapcutService(service) {
 }
 
 function withPurchaseThanks(message) {
-  return `${String(message || "").trim()}\n\nGracias por tu compra y confianza`;
+  return `${String(message || "").trim()}\n\nGracias por tu compra y confianza 😁`;
 }
 
 function inventoryDurationText(item) {
@@ -165,6 +165,7 @@ function NavIcon({ name }) {
     stream: <><rect {...common} x="3" y="4" width="18" height="13" rx="2"/><path {...common} d="M8 21h8M12 17v4"/><path {...common} d="m10 8 5 2.5-5 2.5V8Z"/></>,
     gift: <><path {...common} d="M20 12v9H4v-9"/><path {...common} d="M2 7h20v5H2z"/><path {...common} d="M12 7v14"/><path {...common} d="M12 7H7.5a2.5 2.5 0 1 1 2.2-3.7L12 7Zm0 0h4.5a2.5 2.5 0 1 0-2.2-3.7L12 7Z"/></>,
     inventory: <><path {...common} d="M3 7h18v14H3z"/><path {...common} d="M5 3h14v4H5z"/><path {...common} d="M8 11h8"/><path {...common} d="M8 15h5"/></>,
+    templates: <><path {...common} d="M8 3h9l4 4v14H8zM17 3v5h4M11 12h7M11 16h7M3 7v14h12"/></>,
     logout: <><path {...common} d="M10 17l5-5-5-5"/><path {...common} d="M15 12H3"/><path {...common} d="M14 3h5a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-5"/></>,
     menu: <><path {...common} d="M4 6h16M4 12h16M4 18h16"/></>
   };
@@ -180,7 +181,8 @@ const VIEW_TITLES = {
   promociones: "Promociones diarias",
   inventario: "Inventario / Streaming",
   crearCliente: "Crear cliente",
-  crearStreaming: "Crear servicio streaming"
+  crearStreaming: "Crear servicio streaming",
+  plantillas: "Plantillas de mensajes"
 };
 
 const VALID_VIEWS = new Set(Object.keys(VIEW_TITLES));
@@ -223,9 +225,41 @@ function formatLongDate(value) {
   return new Intl.DateTimeFormat("es-CO", { day: "numeric", month: "long" }).format(date);
 }
 
+// Fecha en mensajes: "17 octubre" (sin año).
+function fechaCortaMensaje(value) {
+  const fecha = parseISO(String(value || "").slice(0, 10));
+  if (!fecha || Number.isNaN(fecha.getTime())) return "";
+  const mes = new Intl.DateTimeFormat("es-CO", { month: "long", timeZone: "UTC" }).format(fecha);
+  return `${fecha.getUTCDate()} ${mes}`;
+}
+
 function promotionIsToday(promo) {
   const today = todayISO();
   return promo?.activo !== false && String(promo?.fecha_inicio || "") <= today && String(promo?.fecha_fin || "") >= today;
+}
+
+const REGLAS_PREDETERMINADAS = `¡IMPORTANTE!
+•⁠  ⁠⚠️ Uso apropiado
+❌ No cambiar nombres
+❌ No usarla en más de 1 dispositivo a la vez
+❌Prohibido compartir la pantalla con otras personas
+🚫Si viola alguna de las reglas, la pantalla quedará suspendida.🚫`;
+
+const VARIABLES_PLANTILLA = ["cliente", "servicio", "tiempo", "correo", "clave", "perfil", "pin", "proveedor", "fecha_creacion", "fecha_vencimiento", "grupo", "correo_cliente"];
+
+// Una plantilla se comparte entre las duraciones del mismo servicio.
+function claveServicioPlantilla(nombre) {
+  return normalizeText(nombre)
+    .replace(/\s*[-–—|]\s*\d+\s*(dias?|mes(?:es)?|anos?)\s*$/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function aplicarPlantilla(contenido, datos) {
+  return String(contenido || "").replace(/\{([a-z_]+)\}/gi, (texto, variable) =>
+    Object.prototype.hasOwnProperty.call(datos, variable.toLowerCase())
+      ? String(datos[variable.toLowerCase()] ?? "") : texto
+  ).trim();
 }
 
 function bloquearScrollNumerico(event) {
@@ -236,9 +270,17 @@ function bloquearScrollNumerico(event) {
 
 export default function Admin() {
   const [serviceSearch, setServiceSearch] = useState("");
+  const [plantillaServicioId, setPlantillaServicioId] = useState("");
+  const [plantillaNombre, setPlantillaNombre] = useState("");
+  const [plantillaContenido, setPlantillaContenido] = useState("");
+  const [plantillaPestana, setPlantillaPestana] = useState("crear");
+  const [plantillaBusquedaServicio, setPlantillaBusquedaServicio] = useState("");
+  const [plantillaBusquedaLista, setPlantillaBusquedaLista] = useState("");
+  const [plantillaMostrarServicios, setPlantillaMostrarServicios] = useState(false);
+  const [plantillaEditandoId, setPlantillaEditandoId] = useState("");
   const router = useRouter();
   const [token, setToken] = useState("");
-  const [data, setData] = useState({ clientes: [], servicios: [], suscripciones: [], ganancias: [], promociones: [], premios_fidelidad: [], inventario: [], inventario_historico: [],inventario_externo: [], proveedores: [], asignaciones: [], order_counts: {} });
+  const [data, setData] = useState({ clientes: [], servicios: [], suscripciones: [], ganancias: [], promociones: [], premios_fidelidad: [], inventario: [], inventario_historico: [],inventario_externo: [], proveedores: [], asignaciones: [], order_counts: {}, plantillas_mensajes: [] });
   const filteredServices = data.servicios.filter((service) =>
   service.nombre.toLowerCase().includes(serviceSearch.toLowerCase())
 );
@@ -370,6 +412,33 @@ const [profitEditValue, setProfitEditValue] = useState("");
     const timer = window.setTimeout(() => setCopyNotice(false), 1800);
     return () => window.clearTimeout(timer);
   }, [copyNotice]);
+
+  // Los avisos aparecen sin desplazar la pantalla y desaparecen suavemente.
+  useEffect(() => {
+    if (!message) return undefined;
+    const timer = window.setTimeout(() => setMessage(""), 6000);
+    return () => window.clearTimeout(timer);
+  }, [message]);
+
+  useEffect(() => {
+    if (!error) return undefined;
+    const timer = window.setTimeout(() => setError(""), 10000);
+    return () => window.clearTimeout(timer);
+  }, [error]);
+
+  function iconoAviso(texto, esError = false) {
+    if (esError) return "⚠️";
+    const t = normalizeText(texto);
+    if (/elimin|borrad|quitad/.test(t)) return "🗑️";
+    if (/renovad|renovaci/.test(t)) return "🔄";
+    if (/cliente/.test(t)) return "👤";
+    if (/cuenta|inventario|perfil|stock/.test(t)) return "📦";
+    if (/pedido|entrega/.test(t)) return "🎉";
+    if (/ganancia/.test(t)) return "💰";
+    if (/guardad|actualizad|cread/.test(t)) return "✅";
+    return "✨";
+  }
+
 
   useEffect(() => {
     let active = true;
@@ -1153,6 +1222,26 @@ const [profitEditValue, setProfitEditValue] = useState("");
     const purchaseDate = formatLongDate(type === "gemini" && !assignmentData.garantia ? (assignmentData.fecha_entrega || todayISO()) : sub.fecha_inicio);
     const cupo = assignmentData.cupo_numero || deliveryForm.cupo_numero || 1;
     const clientEmail = assignmentData.correo_cliente || deliveryForm.correo_cliente || "";
+    const profilePin = item.perfiles_pins?.[String(cupo)] || item.pin || "";
+    const plantilla = (data.plantillas_mensajes || []).find((entry) => {
+      if (entry.activo === false) return false;
+      const servicioPlantilla = (data.servicios || []).find((srv) => srv.id === entry.servicio_id);
+      return servicioPlantilla && claveServicioPlantilla(servicioPlantilla.nombre) === claveServicioPlantilla(service?.nombre);
+    });
+    if (plantilla?.contenido) {
+      const datos = {
+        cliente, servicio: service?.nombre || "Servicio", tiempo: durationLabel,
+        correo: item.correo || "", clave: item.clave || "", perfil: String(cupo || ""),
+        pin: profilePin, proveedor: provider,
+        // La fecha es la de CREACIÓN del pedido, no la de inicio del servicio.
+        fecha_creacion: fechaCortaMensaje(todayISO()),
+        // Compatibilidad con plantillas antiguas que ya usaban {fecha_inicio}.
+        fecha_inicio: fechaCortaMensaje(todayISO()),
+        fecha_vencimiento: formatDate(sub.fecha_vencimiento), grupo: item.grupo || "",
+        correo_cliente: clientEmail
+      };
+      return withPurchaseThanks(aplicarPlantilla(plantilla.contenido, datos));
+    }
 
     if (isCapcutService(service)) {
       return withPurchaseThanks(`${service?.nombre || "Capcut pro"} 1 dispositivo x${durationLabel} (${purchaseDate})${providerTag}
@@ -1179,7 +1268,7 @@ ${String.fromCodePoint(0x2705)}Envíame una captura de pantalla de:
 -Prohibido salir del team.
 
 ${String.fromCodePoint(0x2728)} En resumen:
-${String.fromCodePoint(0x1F449)} Ingresa y usa en un único dispositivo máximo`);
+${String.fromCodePoint(0x1F449)} Ingresa y usa en un único dispositivo máximo\n\n${REGLAS_PREDETERMINADAS}`);
     }
 
     if (type === "chatgpt") {
@@ -1196,7 +1285,7 @@ ${cliente}
 -Prohibido cambiar cualquier tipo de información ${String.fromCodePoint(0x1FAE1)}
 Ingresar solo en las apps oficiales, no por el navegador${String.fromCodePoint(0x1F6A8)}
 (Descargar la app ya sea en PC o CEL)
-Respeta las reglas para mantener tu garantía${String.fromCodePoint(0x2611, 0xFE0F)}`);
+Respeta las reglas para mantener tu garantía${String.fromCodePoint(0x2611, 0xFE0F)}\n\n${REGLAS_PREDETERMINADAS}`);
     }
 
     if (type === "gemini") {
@@ -1209,10 +1298,9 @@ ${service?.nombre || "Gemini Pro"} x${durationLabel} (${purchaseDate})${provider
 Correo: ${clientEmail}
 Grupo: ${item.grupo || item.correo || ""}
 
-${cliente}`);
+${cliente}\n\n${REGLAS_PREDETERMINADAS}`);
     }
 
-    const profilePin = item.perfiles_pins?.[String(cupo)] || item.pin || "";
     const pinLine = profilePin ? `\nPIN: ${profilePin}` : "";
     const profileLine = cupo ? `\nPERFIL ${cupo}` : "";
     const notes = "";
@@ -1221,12 +1309,7 @@ ${cliente}`);
 CORREO: ${item.correo || ""}
 CLAVE: ${item.clave || ""}${profileLine}${pinLine}
 
-¡IMPORTANTE!
-⚠️ Uso apropiado
-❌ No cambiar nombres
-❌ No usarla en más de 1 dispositivo a la vez
-❌ Prohibido compartir la pantalla con otras personas
-🚫 Si viola alguna de las reglas, la pantalla quedará suspendida. 🚫
+${REGLAS_PREDETERMINADAS}
 
 ${cliente}`);
   }
@@ -3460,6 +3543,188 @@ async function saveProfitEdit(item) {
     );
   }
 
+  const gruposServiciosPlantilla = useMemo(() => {
+    const porNombre = new Map();
+    for (const servicio of (data.servicios || [])) {
+      const clave = claveServicioPlantilla(servicio.nombre);
+      if (!clave || porNombre.has(clave)) continue;
+      porNombre.set(clave, { id: servicio.id, nombre: servicio.nombre, clave });
+    }
+    return [...porNombre.values()].sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
+  }, [data.servicios]);
+
+  function limpiarEditorPlantillas() {
+    setPlantillaServicioId("");
+    setPlantillaBusquedaServicio("");
+    setPlantillaNombre("");
+    setPlantillaContenido("");
+    setPlantillaEditandoId("");
+    setPlantillaMostrarServicios(false);
+  }
+
+  function elegirServicioPlantilla(grupo) {
+    setPlantillaServicioId(grupo.id);
+    setPlantillaBusquedaServicio(grupo.nombre);
+    setPlantillaMostrarServicios(false);
+  }
+
+  function editarPlantillaGuardada(plantilla) {
+    const servicio = (data.servicios || []).find((item) => item.id === plantilla.servicio_id);
+    const clave = claveServicioPlantilla(servicio?.nombre);
+    const grupo = gruposServiciosPlantilla.find((item) => item.clave === clave);
+    setPlantillaServicioId(grupo?.id || plantilla.servicio_id);
+    setPlantillaBusquedaServicio(grupo?.nombre || servicio?.nombre || "");
+    setPlantillaNombre(plantilla.nombre || "Mensaje de entrega");
+    setPlantillaContenido(plantilla.contenido || "");
+    setPlantillaEditandoId(plantilla.id);
+    setPlantillaPestana("crear");
+    setPlantillaMostrarServicios(false);
+    window.setTimeout(() => document.getElementById("jc-template-editor")?.scrollIntoView({ behavior: "smooth", block: "start" }), 80);
+  }
+
+  async function guardarPlantilla(e) {
+    e.preventDefault();
+    if (!plantillaServicioId || !plantillaContenido.trim()) {
+      setError("Selecciona un servicio y escribe el contenido de la plantilla.");
+      return;
+    }
+    const seleccion = (data.servicios || []).find((s) => s.id === plantillaServicioId);
+    const clave = claveServicioPlantilla(seleccion?.nombre);
+    const otra = (data.plantillas_mensajes || []).find((x) => {
+      if (x.id === plantillaEditandoId) return false;
+      const servicio = (data.servicios || []).find((s) => s.id === x.servicio_id);
+      return claveServicioPlantilla(servicio?.nombre) === clave;
+    });
+    if (otra) {
+      setError(`Ya existe una plantilla para ${seleccion?.nombre || "este servicio"}. Edítala desde Lista de plantillas.`);
+      return;
+    }
+    setWorking(true);
+    setError("");
+    setMessage("");
+    try {
+      await api("/api/admin/plantillas", {
+        method: plantillaEditandoId ? "PATCH" : "POST",
+        body: JSON.stringify({
+          ...(plantillaEditandoId ? { id: plantillaEditandoId } : {}),
+          servicio_id: plantillaServicioId,
+          nombre: plantillaNombre.trim() || "Mensaje de entrega",
+          contenido: plantillaContenido
+        })
+      });
+      await refresh();
+      limpiarEditorPlantillas();
+      setPlantillaPestana("lista");
+      setMessage(plantillaEditandoId ? "Plantilla actualizada correctamente." : "Plantilla creada correctamente.");
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  async function borrarPlantilla(plantilla) {
+    if (!plantilla || !window.confirm("¿Eliminar esta plantilla? Los siguientes pedidos usarán el mensaje predeterminado.")) return;
+    setWorking(true);
+    setError("");
+    setMessage("");
+    try {
+      await api("/api/admin/plantillas", { method: "DELETE", body: JSON.stringify({ id: plantilla.id }) });
+      await refresh();
+      if (plantillaEditandoId === plantilla.id) limpiarEditorPlantillas();
+      setMessage("Plantilla eliminada. Se usará el mensaje predeterminado.");
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  function renderPlantillas() {
+    const servicio = (data.servicios || []).find((x) => x.id === plantillaServicioId);
+    const opciones = gruposServiciosPlantilla.filter((x) => normalizeText(x.nombre).includes(normalizeText(plantillaBusquedaServicio)));
+    const lista = (data.plantillas_mensajes || []).filter((plantilla) => {
+      const srv = (data.servicios || []).find((x) => x.id === plantilla.servicio_id);
+      return normalizeText(`${plantilla.nombre} ${srv?.nombre || ""} ${plantilla.contenido}`).includes(normalizeText(plantillaBusquedaLista));
+    });
+    const ejemplo = {
+      cliente: "María Pérez", servicio: servicio?.nombre || "Netflix", tiempo: "1 mes",
+      correo: "cuenta@ejemplo.com", clave: "clave-ejemplo", perfil: "2", pin: "1234",
+      proveedor: "JU", fecha_creacion: "17 octubre", fecha_inicio: "17 octubre", fecha_vencimiento: "17/11/2026",
+      grupo: "familia@ejemplo.com", correo_cliente: "cliente@gmail.com"
+    };
+    return (
+      <>
+        <div className="pageHeading">
+          <p className="muted">Personalización</p>
+          <h1>Plantillas de mensajes</h1>
+          <p className="pageLead">Organiza mensajes por servicio. Una misma plantilla funciona para todas sus duraciones; el tiempo se obtiene del pedido.</p>
+        </div>
+        <div className="jcTemplateTabs">
+          <button type="button" className={plantillaPestana === "crear" ? "active" : ""} onClick={() => { limpiarEditorPlantillas(); setPlantillaPestana("crear"); }}>✍️ Crear plantilla</button>
+          <button type="button" className={plantillaPestana === "lista" ? "active" : ""} onClick={() => { setPlantillaMostrarServicios(false); setPlantillaPestana("lista"); }}>📚 Lista de plantillas <span>{(data.plantillas_mensajes || []).length}</span></button>
+        </div>
+        {plantillaPestana === "crear" ? (
+          <form id="jc-template-editor" className="card adminForm jcTemplateEditor" onSubmit={guardarPlantilla}>
+            <div className="jcTemplateSectionHeading"><h2>{plantillaEditandoId ? "Editar plantilla" : "Nueva plantilla"}</h2><p>{plantillaEditandoId ? "Modifica su servicio, título o mensaje y guarda los cambios." : "Selecciona el servicio y personaliza su mensaje de entrega."}</p></div>
+            <label>Buscar servicio</label>
+            <div className="jcTemplateSelectWrap">
+              <input autoComplete="off" value={plantillaBusquedaServicio} onFocus={() => setPlantillaMostrarServicios(true)} onChange={(e) => { setPlantillaBusquedaServicio(e.target.value); setPlantillaServicioId(""); setPlantillaMostrarServicios(true); }} placeholder="🔍 Escribe Canva, Spotify, Netflix..." required />
+              {plantillaMostrarServicios && (
+                <div className="jcTemplateOptions">
+                  {opciones.length ? opciones.map((grupo) => <button type="button" key={grupo.clave} onMouseDown={(e) => e.preventDefault()} onClick={() => elegirServicioPlantilla(grupo)}>{grupo.nombre}</button>) : <p>No encontramos ese servicio.</p>}
+                </div>
+              )}
+            </div>
+            {plantillaServicioId && (
+              <>
+                <p className="fieldHint">✅ La plantilla se utilizará en todos los pedidos de <strong>{servicio?.nombre}</strong>, sin importar si son de 1, 3 o 12 meses.</p>
+                <label>Nombre interno
+                  <input value={plantillaNombre} onChange={(e) => setPlantillaNombre(e.target.value)} placeholder="Ej. Entrega Netflix" maxLength={120} />
+                </label>
+                <div className="jcTemplateVariables">
+                  <strong>Variables automáticas (toca para copiar)</strong>
+                  <div className="jcTemplateTokens">
+                    {VARIABLES_PLANTILLA.map((variable) => <button type="button" key={variable} className="miniButton" onClick={() => copyText(`{${variable}}`)}>{`{${variable}}`}</button>)}
+                  </div>
+                  <p className="fieldHint">Las variables se rellenan automáticamente al generar el pedido. {`{fecha_creacion}`} muestra, por ejemplo, «17 octubre».</p>
+                </div>
+                <label>Texto del mensaje
+                  <textarea rows={14} value={plantillaContenido} onChange={(e) => setPlantillaContenido(e.target.value)} placeholder={`🎬 {servicio} x{tiempo}\nCliente: {cliente}\nCorreo: {correo}\nClave: {clave}\nPerfil: {perfil}\nPIN: {pin}`} required style={{minHeight:260, whiteSpace:"pre-wrap"}} />
+                </label>
+                <div className="jcTemplatePreview"><strong>👀 Vista previa con datos de ejemplo</strong><pre>{plantillaContenido.trim() ? aplicarPlantilla(plantillaContenido, ejemplo) + "\n\nGracias por tu compra y confianza 😁" : REGLAS_PREDETERMINADAS}</pre></div>
+                <div className="inlineActions">
+                  <button className="button primary" disabled={working || !plantillaContenido.trim()}>{working ? "Guardando..." : plantillaEditandoId ? "Guardar cambios" : "Crear plantilla"}</button>
+                  <button type="button" className="miniButton" onClick={limpiarEditorPlantillas}>Limpiar formulario</button>
+                  {plantillaEditandoId && <button type="button" className="miniButton" onClick={() => { limpiarEditorPlantillas(); setPlantillaPestana("lista"); }}>Cancelar edición</button>}
+                </div>
+              </>
+            )}
+          </form>
+        ) : (
+          <section className="card jcTemplateList">
+            <div className="jcTemplateSectionHeading jcTemplateListHeading"><h2>Plantillas guardadas</h2><p>Busca, edita o elimina cualquier plantilla que hayas creado.</p></div>
+            <div className="jcTemplateSearchWrap">
+              <span aria-hidden="true" className="jcTemplateSearchIcon">🔎</span>
+              <input type="search" aria-label="Buscar plantilla o servicio" placeholder="Buscar plantilla o servicio..." value={plantillaBusquedaLista} onChange={(e) => setPlantillaBusquedaLista(e.target.value)} />
+            </div>
+            <div className="jcTemplateCards">
+              {lista.length === 0 ? <div className="emptyState">No encontramos plantillas. Ve a Crear plantilla para agregar la primera.</div> : lista.map((plantilla) => {
+                const srv = (data.servicios || []).find((x) => x.id === plantilla.servicio_id);
+                return (
+                  <article key={plantilla.id} className="jcTemplateCard">
+                    <div className="jcTemplateCardTop"><strong><span className="jcTemplateServiceName">{claveServicioPlantilla(srv?.nombre || "Servicio")}</span><span className="jcTemplateNameSeparator"> — </span>{plantilla.nombre || "Sin nombre"}</strong></div>
+                    <div className="inlineActions"><button type="button" className="miniButton primaryMini" onClick={() => editarPlantillaGuardada(plantilla)}>✏️ Editar</button><button type="button" className="miniButton dangerMini" disabled={working} onClick={() => borrarPlantilla(plantilla)}>Eliminar</button></div>
+                  </article>
+                );
+              })}
+            </div>
+          </section>
+        )}
+      </>
+    );
+  }
+
   function renderCrearStreaming() {
     function changeServiceType(form, setter, nextType) {
       const next = { ...form, tipo_entrega: nextType };
@@ -4296,6 +4561,13 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
   return (
     <main className="adminShell">
       {copyNotice && <div className="copyToast" role="status" aria-live="polite">Texto copiado <span>✓</span></div>}
+      {(error || message) && (
+        <div key={`${error ? "error" : "ok"}-${error || message}`} className={`jcActionToast ${error ? "jcActionToastError" : "jcActionToastSuccess"}`} role={error ? "alert" : "status"} aria-live={error ? "assertive" : "polite"}>
+          <span className="jcActionToastEmoji" aria-hidden="true">{iconoAviso(error || message, Boolean(error))}</span>
+          <span className="jcActionToastText">{error || message}</span>
+          <button type="button" className="jcActionToastClose" aria-label="Cerrar aviso" onClick={() => { setError(""); setMessage(""); }}>×</button>
+        </div>
+      )}
       <button className="mobileMenuButton" type="button" onClick={() => setMenuOpen(true)}><NavIcon name="menu" /><span>Menú</span></button>
       {menuOpen && <button className="sidebarBackdrop" aria-label="Cerrar menú" onClick={() => setMenuOpen(false)} />}
       <aside className={menuOpen ? "adminSidebar open" : "adminSidebar"}>
@@ -4316,6 +4588,7 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
           <p className="navLabel">GESTIÓN</p>
           <button className={view === "crearCliente" ? "active" : ""} onClick={() => navigate("crearCliente")}><NavIcon name="addClient" /><span className="navText">Crear cliente</span></button>
           <button className={view === "crearStreaming" ? "active" : ""} onClick={() => navigate("crearStreaming")}><NavIcon name="stream" /><span className="navText">Crear servicio streaming</span></button>
+          <button className={view === "plantillas" ? "active" : ""} onClick={() => navigate("plantillas")}><NavIcon name="templates" /><span className="navText">Plantillas de mensajes</span></button>
         </nav>
         <div className="sidebarFooter"><button type="button" onClick={logout}><NavIcon name="logout" /><span>Salir</span></button></div>
       </aside>
@@ -4326,8 +4599,6 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
           <button className="linkButton desktopLogout" onClick={logout}>Salir</button>
         </header>
         <div className="adminPageContent">
-          {error && <div className="errorBox wide">{error}</div>}
-          {message && <div className="successBox">{message}</div>}
           {view === "pedido" && renderPedido()}
           {view === "activas" && renderActivas()}
           {view === "vencidas" && renderVencidas()}
@@ -4337,8 +4608,109 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
           {view === "inventario" && renderInventario()}
           {view === "crearCliente" && renderCrearCliente()}
           {view === "crearStreaming" && renderCrearStreaming()}
+          {view === "plantillas" && renderPlantillas()}
         </div>
       </section>
+      <style jsx global>{`
+
+        .jcTemplateTabs { display:flex; flex-wrap:wrap; gap:10px; margin: 10px 0 20px; }
+        .jcTemplateTabs button { border:1px solid #23567f; background:#0b2036; color:#b8daf7; border-radius:12px; padding:13px 19px; font-weight:700; cursor:pointer; }
+        .jcTemplateTabs button.active { background:linear-gradient(110deg,#0b75cf,#087eb2); color:#fff; box-shadow:0 5px 18px #001d3a; }
+        .jcTemplateTabs span { margin-left:7px; background:#153b5d; border-radius:16px; padding:3px 9px; }
+        .jcTemplateEditor, .jcTemplateList { max-width:920px; }
+        .jcTemplateList { padding:24px !important; }
+        .jcTemplateSectionHeading h2 { margin:0 0 6px; font-size:1.3rem; color:#f2f8ff; }
+        .jcTemplateSectionHeading p { margin:0 0 18px; color:#9ec3e2; }
+        .jcTemplateListHeading { padding: 4px 2px 0; margin-bottom:18px; }
+        .jcTemplateListHeading p { margin-bottom:0; line-height:1.5; }
+        .jcTemplateSearchWrap { position:relative; margin:0 0 20px; }
+        .jcTemplateSearchIcon { position:absolute; left:15px; top:50%; transform:translateY(-50%); pointer-events:none; font-size:1rem; }
+        .jcTemplateSearchWrap input { display:block; width:100%; min-height:48px; border:1px solid #28658e; border-radius:12px; padding:11px 15px 11px 47px; outline:none; color:#eaf6ff; background:#071727; font:inherit; transition:border-color .2s, box-shadow .2s; }
+        .jcTemplateSearchWrap input:focus { border-color:#28a6ed; box-shadow:0 0 0 3px #178bca30; }
+        .jcTemplateSearchWrap input::placeholder { color:#91adc6; }
+        .jcTemplateSelectWrap { position:relative; }
+        .jcTemplateOptions { position:absolute; z-index:120; top:100%; left:0; right:0; max-height:250px; overflow:auto; border:1px solid #2c658d; border-radius:12px; background:#06172a; box-shadow:0 18px 32px #0008; }
+        .jcTemplateOptions button { display:block; width:100%; border:0; border-bottom:1px solid #173553; text-align:left; color:#e6f5ff; background:transparent; padding:12px 14px; cursor:pointer; }
+        .jcTemplateOptions button:hover, .jcTemplateOptions button:focus { background:#123c63; }
+        .jcTemplateOptions p { padding:12px; color:#9ec3e2; }
+        .jcTemplateCards { display:grid; grid-template-columns:1fr; gap:12px; margin-top:0; }
+        .jcTemplateCard { border:1px solid #214969; border-radius:15px; padding:16px 18px; background:linear-gradient(125deg,#0a1e33,#0d2a44); min-width:0; }
+        .jcTemplateCardTop { display:flex; gap:10px; align-items:center; margin-bottom:13px; }
+        .jcTemplateCardTop strong { display:block; color:#fff; font-size:1.05rem; line-height:1.45; overflow-wrap:anywhere; }
+        .jcTemplateServiceName { color:#54b9fa; text-transform:capitalize; }
+        .jcTemplateNameSeparator { color:#7d9eb9; }
+        .jcTemplateCard .inlineActions { margin:0; }
+        @media(max-width:600px) { .jcTemplateTabs { display:grid; grid-template-columns:1fr 1fr; } .jcTemplateTabs button { padding:12px 8px; font-size:.82rem; } }
+
+        .jcTemplateVariables { padding: 12px; background: #0b2136; border-radius: 12px; border: 1px solid #214669; }
+        .jcTemplateTokens { display: flex; flex-wrap: wrap; gap: 7px; margin: 12px 0; }
+        .jcTemplatePreview { border: 1px solid #214669; border-radius: 12px; padding: 16px; background: #071525; }
+        .jcTemplatePreview pre { white-space: pre-wrap; word-break: break-word; font: inherit; margin: 12px 0 0; }
+        /* Avisos flotantes: visibles desde cualquier altura del panel */
+        .jcActionToast {
+          position: fixed;
+          z-index: 1200;
+          top: 20px;
+          right: 22px;
+          width: min(440px, calc(100vw - 32px));
+          display: flex;
+          align-items: center;
+          gap: 13px;
+          padding: 16px 14px;
+          border: 1px solid #246da1;
+          border-radius: 16px;
+          background: linear-gradient(135deg, #0e2943 0%, #0a182a 100%);
+          box-shadow: 0 16px 48px rgba(0,0,0,.42);
+          color: #f2f8ff;
+          font-size: 14px;
+          line-height: 1.4;
+          animation: jcToastSuccess 6s ease both;
+        }
+        .jcActionToastError {
+          border-color: #b35b65;
+          background: linear-gradient(135deg, #45222a 0%, #23141c 100%);
+          animation: jcToastError 10s ease both;
+        }
+        .jcActionToastEmoji { font-size: 25px; flex: 0 0 auto; }
+        .jcActionToastText { flex: 1; overflow-wrap: anywhere; font-weight: 600; }
+        .jcActionToastClose {
+          border: 0; background: transparent; color: #c2d3e6;
+          font-size: 25px; cursor: pointer; align-self: flex-start;
+          line-height: 1; padding: 0 2px;
+        }
+        @keyframes jcToastSuccess {
+          0% { opacity: 0; transform: translateY(-15px) scale(.97); }
+          8%, 82% { opacity: 1; transform: translateY(0) scale(1); }
+          100% { opacity: 0; transform: translateY(-9px) scale(.99); }
+        }
+        @keyframes jcToastError {
+          0% { opacity: 0; transform: translateY(-15px) scale(.97); }
+          5%, 88% { opacity: 1; transform: translateY(0) scale(1); }
+          100% { opacity: 0; transform: translateY(-9px) scale(.99); }
+        }
+        @media (max-width: 720px) {
+          /* El menú queda fijo, pero el título puede desplazarse sin tapar contenido. */
+          .adminShell .adminMainHeader {
+            position: relative !important;
+            top: auto !important;
+            z-index: 1 !important;
+            height: auto !important;
+            min-height: 58px;
+          }
+          .adminShell .adminPageContent { padding-top: 12px; }
+          .jcActionToast {
+            top: calc(66px + env(safe-area-inset-top, 0px));
+            left: 12px; right: 12px;
+            width: auto;
+            font-size: 13px;
+            padding: 13px 12px;
+            border-radius: 13px;
+          }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .jcActionToast, .jcActionToastError { animation: none; }
+        }
+      `}</style>
     </main>
   );
 }

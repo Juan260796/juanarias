@@ -241,6 +241,12 @@ let suscripcionesRes = await supabase
     return Response.json({ error: "Consulta de ganancias de renovación: " + renewalEarningsError.message + ". Ejecuta MIGRACION_GANANCIAS_RENOVACIONES.sql." }, { status: 500 });
   }
 
+  // La ausencia de la nueva tabla de plantillas no debe bloquear el panel.
+  const { data: templatesData, error: templatesError } = await supabase
+    .from("plantillas_mensajes")
+    .select("id,servicio_id,nombre,contenido,activo,created_at,updated_at");
+  const plantillas_mensajes = templatesError ? [] : (templatesData || []);
+
   const allSubscriptions = suscripcionesRes.data || [];
   const visibleSubscriptions = allSubscriptions.filter((item) => !archivedIds.has(item.id) && item.excluido_conteo !== true);
   const order_counts = {};
@@ -278,6 +284,7 @@ const visibleInventory = managedInventoryHistory.filter(
   
   return Response.json({
     clientes: clientesRes.data || [],
+    plantillas_mensajes,
     servicios: serviciosRes.data || [],
     suscripciones: visibleSubscriptions,
 
