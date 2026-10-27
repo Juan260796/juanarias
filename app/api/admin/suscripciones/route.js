@@ -594,6 +594,29 @@ if (error) {
   return Response.json({ error: error.message }, { status: 400 });
 }
 
+// Suspender libera inmediatamente todos los perfiles/cupos activos del pedido.
+// La activación posterior NO restaura asignaciones que otro cliente podría estar usando.
+if (body.activo === false && body.es_renovacion !== true) {
+  const { data: assigned, error: lookupError } = await supabase
+    .from("inventario_asignaciones")
+    .select("id,inventario_id")
+    .eq("suscripcion_id", id)
+    .eq("activo", true);
+  if (lookupError) return Response.json({ error: "Pedido suspendido, pero no fue posible consultar sus cupos: " + lookupError.message }, { status: 500 });
+
+  if ((assigned || []).length) {
+    const { error: releaseError } = await supabase
+      .from("inventario_asignaciones")
+      .update({ activo: false })
+      .in("id", assigned.map(a => a.id));
+    if (releaseError) return Response.json({ error: "Pedido suspendido, pero falló la liberación del cupo: " + releaseError.message }, { status: 500 });
+
+    for (const inventoryId of new Set(assigned.map(a => a.inventario_id).filter(Boolean))) {
+      await recalcInventoryState(supabase, inventoryId);
+    }
+  }
+}
+
 // Guardamos una fila por renovación; jamás sobrescribimos suscripciones.ganancia_neta.
 if (body.es_renovacion === true) {
   const [{ data: clientRow }, { data: serviceRow }] = await Promise.all([
