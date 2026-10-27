@@ -1709,7 +1709,7 @@ duracion_cantidad: selectedDeliveryService.duracion_cantidad
   async function toggleSubscription(s) {
     await runAction(
       () => api("/api/admin/suscripciones", { method: "PATCH", body: JSON.stringify({ id: s.id, activo: !s.activo }) }),
-      s.activo ? "Suscripción suspendida." : "Suscripción activada."
+      s.activo ? "Suscripción suspendida y cupo/perfil liberado." : "Suscripción activada. Asigna un cupo/perfil disponible para volver a utilizarla."
     );
   }
 
@@ -2289,34 +2289,57 @@ Cuenta para renovación
     );
   }
 
-  function whatsappHref(s) {
-    if (!whatsappUrl(s.cliente?.telefono)) return "";
-
+  function whatsappMessage(s) {
     const cliente = s.cliente?.nombre || s.cliente?.username || "cliente";
     const servicio = s.servicio?.nombre || "servicio";
 
-    let message = `Holaa ${cliente} 😊`;
-
-    // CUENTA VENCIDA
-    if (s.days !== null && s.days < 0) {
+    // Mantener el mensaje que corresponde a los días restantes del pedido.
+    if (s.days !== null && s.days <= 0) {
       const dias = Math.abs(s.days);
-
-      message =
-        `Hola ${cliente}, tu servicio ${servicio} se encuentra vencido hace ${dias} día(s). ` +
-        `¿Deseas renovarlo? Estoy atento a tu solicitud 😊`;
+      return s.days === 0
+        ? `Hola ${cliente} 😁, tu servicio ${servicio} ha vencido hoy. ☹️\n¿Deseas renovarlo? Estoy atento a tu solicitud 😊`
+        : `Hola ${cliente} 😁, tu servicio ${servicio} se encuentra vencido hace ${dias} día(s). ☹️\n¿Deseas renovarlo? Estoy atento a tu solicitud 😊`;
     }
 
-    // VENCE PRONTO
-    else if (s.days !== null && s.days >= 1 && s.days <= 3) {
+    if (s.days !== null && s.days >= 1 && s.days <= 3) {
       const unit = s.days === 1 ? "día" : "días";
-
-      message =
-        `Holaa ${cliente} 😊, tu servicio ${servicio} vence en ${s.days} ${unit}. ` +
-        `Si deseas renovarlo, estoy atento a tu solicitud.`;
+      return `Holaa ${cliente} 😊, tu servicio ${servicio} vence en ${s.days} ${unit}. Si deseas renovarlo, estoy atento a tu solicitud.`;
     }
 
-    return whatsappUrl(s.cliente?.telefono, message);
-}
+    return `Holaa ${cliente} 😊`;
+  }
+
+  function whatsappHref(s) {
+    // Abrir la conversación SIN texto precargado, para evitar emojis dañados en PC.
+    return whatsappUrl(s.cliente?.telefono).split("?text=")[0];
+  }
+
+  async function openSubscriptionWhatsapp(s, wa) {
+    // Iniciar la copia mientras el clic del usuario mantiene los permisos del navegador.
+    // La pestaña se abre inmediatamente para evitar bloqueadores de ventanas emergentes.
+    const mensaje = whatsappMessage(s);
+    let copia;
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error("Portapapeles no disponible");
+      copia = navigator.clipboard.writeText(mensaje);
+    } catch {
+      setError("No se pudo acceder al portapapeles. Revisa los permisos del navegador.");
+      return;
+    }
+
+    window.open(wa, "_blank", "noopener,noreferrer");
+    try {
+      await copia;
+      setCopyNotice(false);
+      window.setTimeout(() => setCopyNotice(true), 10);
+      // Reportar solo si YA está vencida; nunca al avisar una próxima renovación.
+      if (s.days !== null && s.days <= 0 && !s.reporte_vencimiento) {
+        await marcarReportada(s.id);
+      }
+    } catch {
+      setError("No se pudo copiar el mensaje. Autoriza el portapapeles y vuelve a pulsar WhatsApp.");
+    }
+  }
 
   function clientWhatsappHref(cliente) {
     return whatsappUrl(cliente?.telefono);
@@ -2438,19 +2461,13 @@ Cuenta para renovación
                       <td><span className={`daysBadge ${daysTone(s.days)}`}>{remainingText(s.days)}</span></td>
                       <td>{wa ? (
   <button
-  className="waTableButton"
-  onClick={async () => {
-
-    if (s.days !== null && s.days < 0 && !s.reporte_vencimiento) {
-      await marcarReportada(s.id);
-    }
-
-    window.open(wa, "_blank");
-
-  }}
->
-  WhatsApp
-</button>
+    type="button"
+    className="waTableButton"
+    onClick={() => openSubscriptionWhatsapp(s, wa)}
+    title="Copiar el mensaje correspondiente y abrir WhatsApp (pegar con Ctrl+V)"
+  >
+    WhatsApp
+  </button>
 ) : (
   <span className="noPhone">Sin WhatsApp</span>
 )}</td>
