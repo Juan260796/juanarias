@@ -167,6 +167,7 @@ function NavIcon({ name }) {
     inventory: <><path {...common} d="M3 7h18v14H3z"/><path {...common} d="M5 3h14v4H5z"/><path {...common} d="M8 11h8"/><path {...common} d="M8 15h5"/></>,
     templates: <><path {...common} d="M8 3h9l4 4v14H8zM17 3v5h4M11 12h7M11 16h7M3 7v14h12"/></>,
     logout: <><path {...common} d="M10 17l5-5-5-5"/><path {...common} d="M15 12H3"/><path {...common} d="M14 3h5a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-5"/></>,
+    bulk: <><rect {...common} x="3" y="4" width="18" height="16" rx="2"/><path {...common} d="M3 10h18M9 10v10M15 10v10"/></>,
     menu: <><path {...common} d="M4 6h16M4 12h16M4 18h16"/></>
   };
   return <span className="navIcon" aria-hidden="true"><svg viewBox="0 0 24 24">{paths[name]}</svg></span>;
@@ -182,7 +183,8 @@ const VIEW_TITLES = {
   inventario: "Inventario / Streaming",
   crearCliente: "Crear cliente",
   crearStreaming: "Crear servicio streaming",
-  plantillas: "Plantillas de mensajes"
+  plantillas: "Plantillas de mensajes",
+  cargaMasiva: "Carga masiva"
 };
 
 const VALID_VIEWS = new Set(Object.keys(VIEW_TITLES));
@@ -287,6 +289,11 @@ export default function Admin() {
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState(false);
   const [message, setMessage] = useState("");
+  const [bulkKind, setBulkKind] = useState("clientes");
+  const [bulkPaste, setBulkPaste] = useState("");
+  const [bulkRows, setBulkRows] = useState([]);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkReport, setBulkReport] = useState(null);
   const [copyNotice, setCopyNotice] = useState(false);
   const [error, setError] = useState("");
   const [view, setView] = useState("pedido");
@@ -3473,6 +3480,118 @@ async function saveProfitEdit(item) {
     );
   }
 
+  // Carga masiva: se usan exclusivamente las API normales, nunca se escriben
+  // tablas de Supabase directamente desde el navegador.
+  function renderCargaMasiva() {
+    const definitions = {
+      clientes: { label: "Clientes", endpoint: "clientes", fields: ["nombre", "username", "telefono", "password"], required: ["nombre", "username", "password"], help: "Cada cliente obtiene su acceso real. La contraseña inicial debe tener al menos 6 caracteres." },
+      servicios: { label: "Servicios", endpoint: "servicios", fields: ["nombre", "descripcion", "duracion_tipo", "duracion_cantidad", "tipo_entrega"], required: ["nombre", "duracion_tipo", "duracion_cantidad"], help: "Duración: dias, meses o anios. Tipo: estandar, chatgpt, gemini o manual." },
+      proveedores: { label: "Proveedores", endpoint: "proveedores", fields: ["iniciales"], required: ["iniciales"], help: "Iniciales únicas (máximo 8 caracteres)." },
+      inventario: { label: "Cuentas streaming", endpoint: "inventario", fields: ["servicio", "proveedor", "correo", "clave", "grupo", "cupos_total", "duracion_tipo", "duracion_cantidad", "fecha_carga", "notas", "pins_por_perfil"], required: ["servicio", "proveedor", "cupos_total"], help: "Servicio y proveedor deben existir. Formato PIN opcional: 1:1234;2:5678. El stock libre lo calcula el panel." },
+      promociones: { label: "Promociones", endpoint: "promociones", fields: ["titulo", "descripcion", "precio", "fecha_inicio", "fecha_fin"], required: ["titulo", "fecha_inicio", "fecha_fin"], help: "Fechas en formato AAAA-MM-DD. El panel controlará la vigencia." }
+    };
+    const cfg = definitions[bulkKind];
+    const normal = (v) => String(v || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+    function parseRows(raw, sep) {
+      const text = String(raw || "").replace(/\r\n/g, "\n").replace(/^\uFEFF/, "").trim();
+      if (!text) return [];
+      const lines = []; let line = [], cell = "", quoted = false;
+      for (let i = 0; i < text.length; i++) {
+        const c = text[i];
+        if (c === '"') { if (quoted && text[i+1] === '"') { cell += '"'; i++; } else quoted = !quoted; }
+        else if (c === sep && !quoted) { line.push(cell); cell = ""; }
+        else if (c === "\n" && !quoted) { line.push(cell); lines.push(line); line = []; cell = ""; }
+        else cell += c;
+      }
+      line.push(cell); lines.push(line);
+      const isHeader = lines[0]?.some((value) => cfg.fields.includes(normal(value)));
+      const records = isHeader ? lines.slice(1) : lines;
+      const headers = isHeader ? lines[0].map(normal) : cfg.fields;
+      return records.filter((values) => values.some((v) => String(v).trim())).map((values, index) => {
+        const item = { _key: `${Date.now()}-${index}`, _status: "pendiente", _error: "" };
+        cfg.fields.forEach((field, idx) => { const pos = isHeader ? headers.indexOf(field) : idx; item[field] = pos < 0 ? "" : String(values[pos] ?? "").trim(); });
+        return item;
+      });
+    }
+    function ingest(raw, preferred) {
+      const separator = preferred || (raw.includes("\t") ? "\t" : raw.includes(";") ? ";" : ",");
+      const next = parseRows(raw, separator);
+      setBulkRows(next); setBulkReport(null);
+      setBulkPaste("");
+      if (!next.length) setError("No se encontraron filas válidas para revisar.");
+      else setMessage(`${next.length} fila(s) cargadas. Revisa antes de guardar.`);
+    }
+    const updateRow = (key, field, value) => setBulkRows((prev) => prev.map((r) => r._key === key ? { ...r, [field]: value, _status: "pendiente", _error: "" } : r));
+    function getPayload(row) {
+      const fields = Object.fromEntries(cfg.fields.map((field) => [field, String(row[field] || "").trim()]));
+      const missing = cfg.required.filter((field) => !fields[field]);
+      if (missing.length) throw new Error(`Faltan: ${missing.join(", ")}`);
+      if (bulkKind === "clientes" && fields.password.length < 6) throw new Error("La contraseña debe tener al menos 6 caracteres.");
+      if (bulkKind === "servicios") return { ...fields, duracion_cantidad: Number(fields.duracion_cantidad), duracion_tipo: fields.duracion_tipo || "meses", tipo_entrega: fields.tipo_entrega || "estandar" };
+      if (bulkKind === "inventario") {
+        const service = data.servicios.find((s) => normal(s.nombre) === normal(fields.servicio) && s.activo !== false);
+        const matches = data.servicios.filter((s) => normal(s.nombre) === normal(fields.servicio) && s.activo !== false);
+        if (!service) throw new Error("Servicio no encontrado: " + fields.servicio);
+        if (matches.length > 1) throw new Error("Hay varias duraciones del servicio. Usa el formulario normal de inventario para elegir con precisión.");
+        const provider = data.proveedores.find((pr) => normal(pr.iniciales) === normal(fields.proveedor) && pr.activo !== false);
+        if (!provider) throw new Error("Proveedor no encontrado: " + fields.proveedor);
+        const pins = {};
+        if (fields.pins_por_perfil) for (const part of fields.pins_por_perfil.split(";")) {
+          const found = /^\s*(\d+)\s*:\s*(.+)\s*$/.exec(part);
+          if (!found) throw new Error("PIN inválido; usa 1:1234;2:5678");
+          pins[found[1]] = found[2].trim();
+        }
+        return { servicio_id: service.id, proveedor_id: provider.id, correo: fields.correo, clave: fields.clave, grupo: fields.grupo, cupos_total: Number(fields.cupos_total), duracion_tipo: fields.duracion_tipo || (effectiveDeliveryType(service) === "gemini" ? "meses" : "dias"), duracion_cantidad: Number(fields.duracion_cantidad || (effectiveDeliveryType(service) === "gemini" ? 1 : 30)), fecha_carga: fields.fecha_carga || todayISO(), notas: fields.notas, perfiles_pins: pins };
+      }
+      return fields;
+    }
+    async function saveAll() {
+      const pending = bulkRows.filter((row) => row._status !== "ok");
+      if (!pending.length || bulkBusy) return;
+      if (!window.confirm(`Se crearán hasta ${pending.length} registros de ${cfg.label}. ¿Continuar?`)) return;
+      setBulkBusy(true); setError(""); setBulkReport(null);
+      let success = 0, failed = 0;
+      const next = bulkRows.map((row) => ({ ...row }));
+      for (const row of next) {
+        if (row._status === "ok") continue;
+        try {
+          const payload = getPayload(row);
+          await api(`/api/admin/${cfg.endpoint}`, { method: "POST", body: JSON.stringify(payload) });
+          row._status = "ok"; row._error = ""; success++;
+        } catch (e) { row._status = "error"; row._error = e.message || "Error al guardar"; failed++; }
+        setBulkRows(next.map((r) => ({ ...r })));
+      }
+      try { await refresh(); } catch (e) { setError("Los registros se procesaron, pero falló la actualización: " + e.message); }
+      setBulkReport({ success, failed }); setBulkBusy(false);
+      setMessage(`${success} registros creados · ${failed} con errores. Los exitosos no se repetirán.`);
+    }
+    return <>
+      <div className="pageHeading"><p className="muted">Gestión de datos</p><h1>📋 Carga masiva</h1><p className="pageLead">Copia filas desde Excel, revisa los datos y guárdalos en el panel sin alterar las automatizaciones.</p></div>
+      <div className="card jcBulkPanel">
+        <div className="jcBulkTop"><div><h2>¿Qué quieres registrar?</h2><p>Elige una categoría antes de pegar información.</p></div>
+          <select aria-label="Tipo de carga masiva" disabled={bulkBusy} value={bulkKind} onChange={(e) => { setBulkKind(e.target.value); setBulkRows([]); setBulkReport(null); setBulkPaste(""); }}>
+            {Object.entries(definitions).map(([value, v]) => <option key={value} value={value}>{v.label}</option>)}
+          </select></div>
+        <p className="jcBulkHint">{cfg.help}</p>
+        <p className="jcBulkHint"><strong>Orden de columnas:</strong> {cfg.fields.join(" · ")}</p>
+        <div className="jcBulkActions"><button type="button" className="miniButton" onClick={() => navigator.clipboard?.writeText(cfg.fields.join("\t"))}>📋 Copiar encabezados para Excel</button><button type="button" className="miniButton" onClick={() => { const content = '\uFEFF' + cfg.fields.join(';') + '\n'; const url = URL.createObjectURL(new Blob([content], { type: 'text/csv;charset=utf-8' })); const a = document.createElement('a'); a.href=url; a.download=`juan-cuentas-${bulkKind}.csv`; a.click(); URL.revokeObjectURL(url); }}>⬇ Descargar plantilla CSV</button></div>
+        <label className="jcBulkLabel">Pega aquí tus filas copiadas desde Excel</label>
+        <textarea className="jcBulkPaste" value={bulkPaste} onChange={(e) => setBulkPaste(e.target.value)} placeholder={cfg.fields.join("\t")} rows={5} disabled={bulkBusy}/>
+        <div className="jcBulkActions"><button type="button" className="miniButton primaryMini" disabled={bulkBusy || !bulkPaste.trim()} onClick={() => ingest(bulkPaste)}>🔎 Revisar filas</button><label className="jcBulkFile">📂 Importar CSV <input type="file" accept=".csv,.tsv,text/csv,text/tab-separated-values" disabled={bulkBusy} onChange={async (e) => { const file=e.target.files?.[0]; if (file) { const contents=await file.text(); ingest(contents, file.name.toLowerCase().endsWith('.tsv') ? '\t' : undefined); } e.target.value=''; }}/></label></div>
+        <p className="jcBulkNote">Para archivos .xlsx, abre Excel, selecciona las celdas y pégalas aquí. No cargues archivos con contraseñas en equipos compartidos.</p>
+      </div>
+      {bulkRows.length > 0 && <div className="card jcBulkPanel">
+        <div className="jcBulkTop"><div><h2>Vista previa · {bulkRows.length} filas</h2><p>Corrige cualquier celda antes de guardar.</p></div><button className="miniButton" disabled={bulkBusy} onClick={() => {setBulkRows([]);setBulkReport(null);}}>Limpiar lista</button></div>
+        <div className="jcBulkScroll"><table className="jcBulkTable"><thead><tr><th>#</th>{cfg.fields.map((field) => <th key={field}>{field.replaceAll('_',' ')}</th>)}<th>Resultado</th><th></th></tr></thead><tbody>
+        {bulkRows.map((row, index) => <tr key={row._key}><td>{index+1}</td>{cfg.fields.map((field) => <td key={field}><input aria-label={`${field} fila ${index+1}`} type={field === 'password' || field === 'clave' ? 'password' : 'text'} disabled={bulkBusy || row._status === 'ok'} value={row[field] ?? ''} onChange={(e) => updateRow(row._key,field,e.target.value)}/></td>)}<td className={row._status === 'ok' ? 'jcBulkOk' : row._status === 'error' ? 'jcBulkError' : ''}>{row._status === 'ok' ? '✓ Guardado' : row._error || 'Pendiente'}</td><td><button type="button" className="miniButton dangerMini" disabled={bulkBusy} onClick={() => setBulkRows((prev) => prev.filter((v) => v._key !== row._key))}>Quitar</button></td></tr>)}
+        </tbody></table></div>
+        {bulkReport && <p className="jcBulkHint">✅ Creados: {bulkReport.success} · ⚠️ Errores: {bulkReport.failed}</p>}
+        <div className="jcBulkActions"><button type="button" className="button primary" disabled={bulkBusy || !bulkRows.some((row) => row._status !== 'ok')} onClick={saveAll}>{bulkBusy ? 'Guardando…' : `Guardar ${bulkRows.filter((row) => row._status !== 'ok').length} registros`}</button></div>
+      </div>}
+      <div className="card jcBulkPanel"><strong>🔒 Procesos protegidos</strong><p>Esta herramienta no elimina registros, no crea pedidos ni renueva servicios, no ocupa o libera perfiles y no modifica ganancias. Todas las altas pasan por las mismas API del panel. La hoja del proveedor JU no se cambia.</p></div>
+    </>;
+  }
+
   function renderCrearCliente() {
     return (
       <>
@@ -4534,6 +4653,7 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
           <button className={view === "crearCliente" ? "active" : ""} onClick={() => navigate("crearCliente")}><NavIcon name="addClient" /><span className="navText">Crear cliente</span></button>
           <button className={view === "crearStreaming" ? "active" : ""} onClick={() => navigate("crearStreaming")}><NavIcon name="stream" /><span className="navText">Crear servicio streaming</span></button>
           <button className={view === "plantillas" ? "active" : ""} onClick={() => navigate("plantillas")}><NavIcon name="templates" /><span className="navText">Plantillas de mensajes</span></button>
+          <button className={view === "cargaMasiva" ? "active" : ""} onClick={() => navigate("cargaMasiva")}><NavIcon name="bulk" /><span className="navText">Carga masiva</span></button>
         </nav>
         <div className="sidebarFooter"><button type="button" onClick={logout}><NavIcon name="logout" /><span>Salir</span></button></div>
       </aside>
@@ -4554,9 +4674,32 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
           {view === "crearCliente" && renderCrearCliente()}
           {view === "crearStreaming" && renderCrearStreaming()}
           {view === "plantillas" && renderPlantillas()}
+          {view === "cargaMasiva" && renderCargaMasiva()}
         </div>
       </section>
       <style jsx global>{`
+        .jcBulkPanel {margin-bottom:20px;padding:24px;background:linear-gradient(145deg,#0c2238,#0a1b30);border:1px solid #234c71;border-radius:16px;color:#deedfc}
+        .jcBulkPanel h2 {margin:0 0 6px;font-size:19px;color:#f4faff}
+        .jcBulkPanel p {color:#a8c2dc;line-height:1.6}
+        .jcBulkTop {display:flex;justify-content:space-between;align-items:center;gap:18px;flex-wrap:wrap;margin-bottom:15px}
+        .jcBulkTop select {max-width:340px;min-width:230px;background:#102d48;border:1px solid #347db1;color:#fff;border-radius:10px;padding:12px}
+        .jcBulkHint {background:#0d3554;border-left:3px solid #34a9ee;border-radius:8px;padding:11px 14px;overflow-wrap:anywhere}
+        .jcBulkLabel {display:block;font-weight:700;margin:18px 0 10px}
+        .jcBulkPaste {display:block;width:100%;min-height:128px;background:#091c30;color:#f0f8ff;border:1px solid #28608b;border-radius:12px;padding:13px;resize:vertical;font:13px/1.5 ui-monospace,monospace}
+        .jcBulkPaste:focus,.jcBulkTable input:focus {outline:2px solid #39b1ed;outline-offset:1px}
+        .jcBulkActions {display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:14px 0}
+        .jcBulkFile {cursor:pointer;display:inline-flex;align-items:center;background:#102d48;color:#eaf5ff;border:1px solid #347db1;border-radius:9px;padding:10px 15px;font-weight:700}
+        .jcBulkFile input {display:none}
+        .jcBulkNote {font-size:13px}
+        .jcBulkScroll {overflow-x:auto;max-width:100%;border:1px solid #224c71;border-radius:12px}
+        .jcBulkTable {width:100%;border-collapse:collapse;min-width:720px;font-size:13px}
+        .jcBulkTable th {white-space:nowrap;background:#123c5d;color:#dff4ff;padding:12px;text-align:left}
+        .jcBulkTable td {border-top:1px solid #244660;padding:8px;color:#deeeff;vertical-align:middle}
+        .jcBulkTable input {min-width:130px;width:160px;background:#081d31;color:#fff;border:1px solid #345a78;border-radius:8px;padding:10px}
+        .jcBulkTable .jcBulkOk {color:#67edac;font-weight:700}
+        .jcBulkTable .jcBulkError {color:#ffb1a5;max-width:240px;min-width:180px}
+        @media(max-width:600px){.jcBulkPanel{padding:14px}.jcBulkTop select{width:100%;max-width:none}}
+
 
         .jcTemplateTabs { display:flex; flex-wrap:wrap; gap:10px; margin: 10px 0 20px; }
         .jcTemplateTabs button { border:1px solid #23567f; background:#0b2036; color:#b8daf7; border-radius:12px; padding:13px 19px; font-weight:700; cursor:pointer; }
