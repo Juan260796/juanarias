@@ -481,7 +481,7 @@ const [profitEditValue, setProfitEditValue] = useState("");
     const cliente = Array.isArray(s.clientes) ? s.clientes[0] : s.clientes;
     const servicio = Array.isArray(s.servicio) ? s.servicio[0] : s.servicio;
     const days = daysRemaining(s.fecha_vencimiento);
-    const expired = Boolean(s.fecha_vencimiento && days !== null && days < 0);
+    const expired = Boolean(s.fecha_vencimiento && days !== null && days <= 0);
     const active = Boolean(s.activo) && Boolean(servicio?.activo !== false) && !expired;
     return { ...s, cliente, servicio, days, expired, active };
   }), [data.suscripciones]);
@@ -490,14 +490,13 @@ const [profitEditValue, setProfitEditValue] = useState("");
     .filter((s) => Boolean(s.activo) && Boolean(s.servicio?.activo !== false) && s.days !== null && s.days >= 1)
     .sort((a, b) => (a.days ?? 999999) - (b.days ?? 999999)), [enrichedSubs]);
 
-  // Solo mostramos vencimientos de hoy hasta 4 días atrás. Al cumplir 5 días
-  // vencidos se archivan del panel y se libera cualquier perfil/cupo asignado.
+  // Mostrar el historial completo de vencidos, incluso pedidos archivados
+  // automaticamente (activo=false). El archivado solo libera los cupos.
   const expiredSubs = useMemo(() => enrichedSubs
   .filter((s) =>
     s.servicio?.activo !== false &&
     s.days !== null &&
-    s.days < 0 &&
-    s.days >= -10
+    s.days <= 0
   )
   .sort((a, b) => (b.days ?? -999999) - (a.days ?? -999999)),
 [enrichedSubs]);
