@@ -248,7 +248,10 @@ let suscripcionesRes = await supabase
   const plantillas_mensajes = templatesError ? [] : (templatesData || []);
 
   const allSubscriptions = suscripcionesRes.data || [];
-  const visibleSubscriptions = allSubscriptions.filter((item) => !archivedIds.has(item.id) && item.excluido_conteo !== true);
+  // Se conservan en la respuesta los pedidos archivados automaticamente:
+  // deben seguir consultables en Cuentas vencidas aunque activo=false.
+  // Solo ocultamos los registros excluidos por eliminacion manual.
+  const visibleSubscriptions = allSubscriptions.filter((item) => item.excluido_conteo !== true);
   const order_counts = {};
   for (const item of allSubscriptions) {
     // Solo excluimos pedidos que se eliminaron manualmente en versiones anteriores.
