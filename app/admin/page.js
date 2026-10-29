@@ -55,6 +55,18 @@ function addDuration(dateString, tipo, cantidad) {
   return `${targetYear}-${String(targetMonthIndex + 1).padStart(2, "0")}-${String(Math.min(d, lastDay)).padStart(2, "0")}`;
 }
 
+// Determinar el tiempo real del pedido sin utilizar la duración del inventario.
+function inferOrderDuration(start, end) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(start || "")) || !/^\d{4}-\d{2}-\d{2}$/.test(String(end || ""))) return { tipo: "meses", cantidad: 1 };
+  const [sy, sm] = start.split("-").map(Number);
+  const [ey, em] = end.split("-").map(Number);
+  const months = (ey - sy) * 12 + em - sm;
+  if (months >= 12 && months % 12 === 0 && addDuration(start, "anios", months / 12) === end) return { tipo: "anios", cantidad: months / 12 };
+  if (months >= 1 && addDuration(start, "meses", months) === end) return { tipo: "meses", cantidad: months };
+  const days = Math.round((Date.parse(`${end}T00:00:00Z`) - Date.parse(`${start}T00:00:00Z`)) / 86400000);
+  return { tipo: "dias", cantidad: Math.max(1, days || 1) };
+}
+
 function nextDayISO(value) {
   const date = parseISO(value);
   date.setDate(date.getDate() + 1);
@@ -78,6 +90,17 @@ function daysRemaining(value) {
   const now = new Date();
   const todayDay = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
   return Math.round((dueDay - todayDay) / 86400000);
+}
+
+// Los pedidos nuevos pueden tener hasta 30 dias de vencidos.
+// En Cuentas vencidas solo se muestran los pedidos vencidos hace 0 a 30 dias.
+// Los mas antiguos siguen en Supabase para conservar ganancias y conteo historico.
+function errorFechaPedidoVencido(fechaVencimiento) {
+  const dias = daysRemaining(fechaVencimiento);
+  if (dias === null) return "No se pudo calcular la fecha de vencimiento del pedido.";
+  return dias < -30
+    ? `No se puede crear este pedido: venció hace ${Math.abs(dias)} días. El máximo permitido para registrar un pedido vencido es 5 días. Corrige la fecha de inicio.`
+    : "";
 }
 
 function remainingText(days) {
@@ -334,11 +357,13 @@ const [profitEditValue, setProfitEditValue] = useState("");
   const [serviceEditForm, setServiceEditForm] = useState({ nombre: "", descripcion: "", activo: true, duracion_tipo: "meses", duracion_cantidad: 1, tipo_entrega: "estandar" });
   const [renewalDrafts, setRenewalDrafts] = useState({});
   const [renewalProfits, setRenewalProfits] = useState({});
+  const [renewalDates, setRenewalDates] = useState({});
   const [renewMenuId, setRenewMenuId] = useState("");
   const [renewAccountMode, setRenewAccountMode] = useState({});
   const [renewSelectedInventory,setRenewSelectedInventory] = useState({});
   const [renewSelectedSlot, setRenewSelectedSlot] = useState({});
   const [renewSameAccountSlot, setRenewSameAccountSlot] = useState({});
+  const [renewExternalDetails, setRenewExternalDetails] = useState({});
   const [inventoryRenewalDrafts, setInventoryRenewalDrafts] = useState({});
   const [inventoryRenewMenuId, setInventoryRenewMenuId] = useState("");
   const [promoForm, setPromoForm] = useState({ titulo: "", descripcion: "", precio: "", fecha_inicio: todayISO(), fecha_fin: todayISO(), activo: true });
@@ -355,13 +380,14 @@ const [profitEditValue, setProfitEditValue] = useState("");
   const [orderSource, setOrderSource] = useState("external");
   const [externalOrderForm, setExternalOrderForm] = useState({ proveedor_id: "", correo: "", clave: "", perfil: 1, pin: "" });
   const [generatedDelivery, setGeneratedDelivery] = useState(null);
+  const [renewalDelivery, setRenewalDelivery] = useState(null);
   const [generatedGuarantees, setGeneratedGuarantees] = useState([]);
   const [replacementForm, setReplacementForm] = useState({ old_inventory_id: "" });
   const [replacementAccountForm, setReplacementAccountForm] = useState({ proveedor_id: "", correo: "", clave: "", pin: "", perfiles_pins: {}, grupo: "", cupos_total: "", duracion_tipo: "", duracion_cantidad: "", notas: "", fecha_carga: todayISO() });
   const [editingInventoryId, setEditingInventoryId] = useState("");
   const [inventoryEditForm, setInventoryEditForm] = useState({});
   const [editingSubscriptionId, setEditingSubscriptionId] = useState("");
-  const [subscriptionEditForm, setSubscriptionEditForm] = useState({ fecha_inicio: "", servicio_id: "", cupo_numero: "" });
+  const [subscriptionEditForm, setSubscriptionEditForm] = useState({ fecha_inicio: "", servicio_id: "", cupo_numero: "", duracion_tipo: "meses", duracion_cantidad: 1 });
   const [deleteSelection, setDeleteSelection] = useState({ suscripciones: [], clientes: [], servicios: [], promociones: [], proveedores: [], inventario: [] });
   const [deleteMode, setDeleteMode] = useState({});
   const [showCredentialsId, setShowCredentialsId] = useState("");
@@ -496,7 +522,8 @@ const [profitEditValue, setProfitEditValue] = useState("");
   .filter((s) =>
     s.servicio?.activo !== false &&
     s.days !== null &&
-    s.days <= 0
+    s.days <= 0 &&
+    s.days >= -30
   )
   .sort((a, b) => (b.days ?? -999999) - (a.days ?? -999999)),
 [enrichedSubs]);
@@ -1301,6 +1328,8 @@ Disculpa las molestias ${String.fromCodePoint(0x1F64F, 0x1F3FE)}`);
   }
 
   async function assignInventory() {
+    const errorFecha = errorFechaPedidoVencido(addDuration(deliveryForm.fecha_inicio || todayISO(), selectedDeliveryService?.duracion_tipo || "meses", Number(selectedDeliveryService?.duracion_cantidad || 1)));
+    if (errorFecha) { setError(errorFecha); return; }
     if (!selectedDeliveryClient || !selectedInventoryItem || !selectedDeliveryService) {
       setError("Selecciona servicio, cuenta/perfil y cliente.");
       return;
@@ -1579,10 +1608,12 @@ duracion_cantidad: selectedDeliveryService.duracion_cantidad
       setError("Selecciona un servicio para calcular automáticamente el vencimiento.");
       return;
     }
+    const errorFecha = errorFechaPedidoVencido(calculatedExpiry);
+    if (errorFecha) { setError(errorFecha); return; }
     await runAction(async () => {
       await api("/api/admin/suscripciones", {
         method: "POST",
-        body: JSON.stringify({ ...subForm, fecha_vencimiento: calculatedExpiry, ganancia_neta: Number(profitValue || 0), fecha_ganancia: todayISO() })
+        body: JSON.stringify({ ...subForm, fecha_vencimiento: calculatedExpiry, ganancia_neta: Number(profitValue || 0), fecha_ganancia: subForm.fecha_inicio || todayISO() })
       });
       setSubForm({ cliente_id: "", servicio_id: "", fecha_inicio: todayISO() });
       setDeliveryForm((prev) => ({ ...prev, servicio_id: "", cliente_id: "", inventario_id: "", cupo_numero: "", correo_cliente: "", fecha_inicio: todayISO() }));
@@ -1596,6 +1627,8 @@ duracion_cantidad: selectedDeliveryService.duracion_cantidad
   }
 
   async function createExternalOrder() {
+    const errorFecha = errorFechaPedidoVencido(calculatedExpiry);
+    if (errorFecha) { setError(errorFecha); return; }
     if (!selectedClient || !selectedService) {
       setError("Selecciona cliente y servicio.");
       return;
@@ -1627,7 +1660,7 @@ duracion_cantidad: selectedDeliveryService.duracion_cantidad
           perfil,
           pin: externalOrderForm.pin,
           ganancia_neta: Number(profitValue || 0),
-          fecha_ganancia: todayISO()
+          fecha_ganancia: subForm.fecha_inicio || todayISO()
         })
       });
 
@@ -1675,7 +1708,11 @@ duracion_cantidad: selectedDeliveryService.duracion_cantidad
   function beginSubscriptionEdit(s) {
     const assignment = activeAssignmentBySubscription[s.id];
     setEditingSubscriptionId(s.id);
+    const duration = inferOrderDuration(s.fecha_inicio, s.fecha_vencimiento);
     setSubscriptionEditForm({
+      ...duration,
+      duracion_tipo: duration.tipo,
+      duracion_cantidad: duration.cantidad,
       fecha_inicio: s.fecha_inicio || todayISO(),
       servicio_id: s.servicio_id || "",
       cupo_numero: assignment?.cupo_numero ? String(assignment.cupo_numero) : ""
@@ -1686,6 +1723,11 @@ duracion_cantidad: selectedDeliveryService.duracion_cantidad
     const assignment = activeAssignmentBySubscription[s.id];
     if (!subscriptionEditForm.fecha_inicio || !subscriptionEditForm.servicio_id) {
       setError("Fecha de inicio y servicio son obligatorios.");
+      return;
+    }
+    const qty = Number(subscriptionEditForm.duracion_cantidad);
+    if (!["dias", "meses", "anios"].includes(subscriptionEditForm.duracion_tipo) || !Number.isInteger(qty) || qty < 1 || (subscriptionEditForm.duracion_tipo === "anios" && qty > 1) || (subscriptionEditForm.duracion_tipo === "meses" && qty > 12) || (subscriptionEditForm.duracion_tipo === "dias" && qty > 365)) {
+      setError("Selecciona un tiempo válido: hasta 365 días, 12 meses o 1 año.");
       return;
     }
     if (assignment && (!subscriptionEditForm.cupo_numero || Number(subscriptionEditForm.cupo_numero) < 1)) {
@@ -1699,11 +1741,16 @@ duracion_cantidad: selectedDeliveryService.duracion_cantidad
           id: s.id,
           fecha_inicio: subscriptionEditForm.fecha_inicio,
           servicio_id: subscriptionEditForm.servicio_id,
+          duracion_tipo: subscriptionEditForm.duracion_tipo,
+          duracion_cantidad: qty,
+          // Si se corrige la fecha de un pedido ya vencido y archivado,
+          // permitir que la API lo reactive al quedar con días restantes.
+          reactivar_al_editar: s.activo === false && s.days !== null && s.days <= 0,
           ...(assignment ? { cupo_numero: Number(subscriptionEditForm.cupo_numero) } : {})
         })
       });
       setEditingSubscriptionId("");
-    }, "Pedido actualizado. Se recalculó la fecha final según la fecha de inicio y la duración correspondiente.");
+    }, "Pedido actualizado. Se recalculó el vencimiento con la duración elegida.");
   }
 
   async function toggleSubscription(s) {
@@ -1779,9 +1826,23 @@ function setRenewSameAccountSlotValue(id, value) {
       setError("Escribe la ganancia neta de esta renovación (puede ser 0).");
       return;
     }
-    const fecha_inicio = todayISO();
+    const fecha_inicio = renewalDates[s.id] || todayISO();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha_inicio)) {
+      setError("Selecciona una fecha válida para la renovación.");
+      return;
+    }
 const fecha_vencimiento = addDuration(fecha_inicio, draft.tipo, rawQty);
-const cambiarCuenta = getRenewAccountMode(s.id) === "nueva";
+const modoRenovacion = getRenewAccountMode(s.id);
+const cambiarCuenta = modoRenovacion === "nueva";
+const externos = renewExternalDetails[s.id] || {};
+if (modoRenovacion === "externo" && !String(externos.correo || "").trim()) {
+  setError("Escribe el correo o acceso del pedido por fuera.");
+  return;
+}
+if (modoRenovacion === "externo" && (!Number.isInteger(Number(externos.perfil || 1)) || Number(externos.perfil || 1) < 1 || Number(externos.perfil || 1) > 50)) {
+  setError("El perfil externo debe estar entre 1 y 50.");
+  return;
+}
 
 const nuevoInventarioId = cambiarCuenta
   ? renewSelectedInventory[s.id]
@@ -1796,28 +1857,97 @@ if (cambiarCuenta && (!nuevoInventarioId || !nuevoCupo)) {
   return;
 }
 
-    await runAction(
-      
-      () => api("/api/admin/suscripciones", { method: "PATCH", body: JSON.stringify(
-        {
-  id: s.id,
-  fecha_inicio,
-  fecha_vencimiento,
-  activo: true,
-  reporte_vencimiento: false,
-  fecha_reporte: null,
-  es_renovacion: true,
-  ganancia_renovacion: gananciaRenovacion,
-  cambiar_cuenta: cambiarCuenta,
-  nuevo_inventario_id: nuevoInventarioId,
-  nuevo_cupo: nuevoCupo,
-  perfil_misma_cuenta: cambiarCuenta ? null : (renewSameAccountSlot[s.id] || "mismo")
-}
+    setWorking(true);
+    setError("");
+    setMessage("");
+    setRenewalDelivery(null);
+    try {
+      // La plantilla se genera solo después de confirmar la renovación en el servidor.
+      await api("/api/admin/suscripciones", { method: "PATCH", body: JSON.stringify({
+        id: s.id,
+        fecha_inicio,
+        fecha_vencimiento,
+        activo: true,
+        reporte_vencimiento: false,
+        fecha_reporte: null,
+        es_renovacion: true,
+        ganancia_renovacion: gananciaRenovacion,
+        cambiar_cuenta: cambiarCuenta,
+        modo_renovacion: modoRenovacion,
+        duracion_tipo: draft.tipo,
+        duracion_cantidad: rawQty,
+        credenciales_externas: modoRenovacion === "externo" ? {
+          proveedor_id: externos.proveedor_id || null,
+          correo: String(externos.correo || "").trim(),
+          clave: externos.clave || "",
+          perfil: Number(externos.perfil || 1),
+          pin: externos.pin || ""
+        } : null,
+        nuevo_inventario_id: nuevoInventarioId,
+        nuevo_cupo: nuevoCupo,
+        perfil_misma_cuenta: cambiarCuenta ? null : (renewSameAccountSlot[s.id] || "mismo")
+      }) });
+      const latest = await api(`/api/admin/data?today=${todayISO()}`);
+      setData(latest);
+      const renewed = (latest.suscripciones || []).find((row) => row.id === s.id) || s;
+      const cliente = renewed.cliente || (latest.clientes || []).find((x) => x.id === s.cliente_id) || s.cliente;
+      const servicio = renewed.servicio || (latest.servicios || []).find((x) => x.id === s.servicio_id) || s.servicio;
+      const assignment = (latest.asignaciones || []).find((a) => a.suscripcion_id === s.id && a.activo === true);
+      const account = assignment && [ ...(latest.inventario || []), ...(latest.inventario_externo || []) ]
+        .find((item) => item.id === assignment.inventario_id);
+      let deliveryText;
+      if (account) {
+        // Usamos la misma función y las mismas plantillas que al crear un pedido.
+        // La duración debe ser la de la renovación, no la duración antigua de la cuenta.
+        // El catálogo se actualiza con latest antes de mostrar la entrega.
+        deliveryText = buildRenewalDeliveryMessage({
+          ...renewed, cliente, servicio, fecha_inicio, fecha_vencimiento
+        }, { ...account, duracion_tipo: draft.tipo, duracion_cantidad: rawQty }, {
+          cupo_numero: assignment.cupo_numero,
+          correo_cliente: assignment.correo_cliente || ""
+        }, latest);
+      } else {
+        // Nunca inventar credenciales o un perfil si el pedido no tiene asignación.
+        deliveryText = withPurchaseThanks(`Hola ${cliente?.nombre || "Cliente"} 😁, tu servicio ${servicio?.nombre || "Servicio"} ha sido renovado por ${durationText(draft.tipo, rawQty)}.\nFecha de renovación: ${formatDate(fecha_inicio)}\nPróximo vencimiento: ${formatDate(fecha_vencimiento)}.`);
+      }
+      setRenewalDelivery({ id: s.id, text: deliveryText, cliente });
+      if (modoRenovacion === "externo") setRenewExternalDetails(prev => { const next={...prev}; delete next[s.id]; return next; });
+      setMessage(`Renovada hasta ${formatDate(fecha_vencimiento)}. Mensaje de entrega generado.`);
+      setRenewMenuId(s.id);
+      setRenewalDates((prev) => { const next = { ...prev }; delete next[s.id]; return next; });
+    } catch (err) {
+      setError(err.message || "No se pudo completar la renovación.");
+    } finally {
+      setWorking(false);
+    }
+  }
 
-) }),
-      `Renovada hasta ${formatDate(fecha_vencimiento)}.`
-    );
-    setRenewMenuId("");
+  // Igual que buildDeliveryMessage, pero usa los datos recién leídos tras renovar,
+  // en vez de las listas de React que todavía pueden contener el pedido anterior.
+  function buildRenewalDeliveryMessage(sub, item, assignmentData, latest) {
+    const cliente = sub.cliente?.nombre || sub.cliente?.username || "Cliente";
+    const service = sub.servicio;
+    const durationLabel = inventoryDurationText(item);
+    const provider = providerInitials(item) || (latest.proveedores || []).find((p) => p.id === item.proveedor_id)?.iniciales || "";
+    const cupo = Number(assignmentData.cupo_numero || 1);
+    const pin = item.perfiles_pins?.[String(cupo)] || item.pin || "";
+    const plantilla = (latest.plantillas_mensajes || []).find((entry) => {
+      if (entry.activo === false) return false;
+      const servicioPlantilla = (latest.servicios || []).find((x) => x.id === entry.servicio_id);
+      return servicioPlantilla && claveServicioPlantilla(servicioPlantilla.nombre) === claveServicioPlantilla(service?.nombre);
+    });
+    if (plantilla?.contenido) {
+      return withPurchaseThanks(aplicarPlantilla(plantilla.contenido, {
+        cliente, servicio: service?.nombre || "Servicio", tiempo: durationLabel,
+        correo: item.correo || "", clave: item.clave || "", perfil: String(cupo),
+        pin, proveedor: provider,
+        fecha_creacion: fechaCortaMensaje(todayISO()),
+        fecha_inicio: fechaCortaMensaje(todayISO()),
+        fecha_vencimiento: formatDate(sub.fecha_vencimiento),
+        grupo: item.grupo || "", correo_cliente: assignmentData.correo_cliente || ""
+      }));
+    }
+    return withPurchaseThanks(`${service?.nombre || "Servicio"} x${durationLabel} (${formatLongDate(sub.fecha_inicio)})${provider ? ` (${provider})` : ""}\n\nCORREO: ${item.correo || ""}\nCLAVE: ${item.clave || ""}\nPERFIL ${cupo}${pin ? `\nPIN: ${pin}` : ""}\n\n${REGLAS_PREDETERMINADAS}\n\n${cliente}`);
   }
 
   function getInventoryRenewalDraft(id) {
@@ -2062,8 +2192,8 @@ if (asignacionActual && item.id === asignacionActual.inventario_id) {
           Renovar <span>{isOpen ? "▴" : "▾"}</span>
         </button>
         {isOpen && (
-          <div className="renewDropdown">
-            <label>
+          <div className="renewDropdown jcRenewForm">
+            <label className="jcRenewFull">
 Cuenta para renovación
 
 <select
@@ -2077,13 +2207,15 @@ Cuenta para renovación
  <option value="nueva">
   Cambiar por otra cuenta disponible
  </option>
+ <option value="solo">Solo pedido (sin credenciales)</option>
+ <option value="externo">Pedido por fuera (credenciales propias)</option>
 
 </select>
 
 </label>
 
 {getRenewAccountMode(s.id) === "actual" && (
-  <label>
+  <label className="jcRenewFull">
     Perfil para renovación
 
     <select
@@ -2137,7 +2269,7 @@ Cuenta para renovación
 
 {getRenewAccountMode(s.id) === "nueva" && (
   <>
-    <label>
+    <label className="jcRenewFull">
       Nueva cuenta disponible
 
       <select
@@ -2162,7 +2294,7 @@ Cuenta para renovación
 
 
     {renewSelectedInventory[s.id] && (
-      <label>
+      <label className="jcRenewFull">
         Perfil disponible
 
         <select
@@ -2222,6 +2354,34 @@ Cuenta para renovación
     )}
   </>
 )}
+            {getRenewAccountMode(s.id) === "solo" && (
+              <p className="jcRenewFull" style={{fontSize:12, color:"#9fc9ed", margin:0}}>
+                El pedido se renovará sin cuenta ni perfil. Se liberará cualquier cupo asignado anteriormente.
+              </p>
+            )}
+            {getRenewAccountMode(s.id) === "externo" && (
+              <div className="jcRenewFull" style={{display:"grid",gap:10,minWidth:0}}>
+                <small style={{color:"#9fc9ed"}}>Credenciales compradas por fuera. No consumen cupos del inventario compartido.</small>
+                <label>Proveedor (opcional)
+                  <select value={(renewExternalDetails[s.id] || {}).proveedor_id || ""} onChange={(e)=>setRenewExternalDetails(prev=>({...prev,[s.id]:{...(prev[s.id] || {}),proveedor_id:e.target.value}}))}>
+                    <option value="">Sin proveedor</option>
+                    {(data.proveedores || []).map(p=><option key={p.id} value={p.id}>{p.iniciales || p.nombre || "Proveedor"}</option>)}
+                  </select>
+                </label>
+                <label>Correo o acceso
+                  <input value={(renewExternalDetails[s.id] || {}).correo || ""} placeholder="correo@ejemplo.com" onChange={(e)=>setRenewExternalDetails(prev=>({...prev,[s.id]:{...(prev[s.id] || {}),correo:e.target.value}}))} />
+                </label>
+                <label>Contraseña (opcional)
+                  <input value={(renewExternalDetails[s.id] || {}).clave || ""} onChange={(e)=>setRenewExternalDetails(prev=>({...prev,[s.id]:{...(prev[s.id] || {}),clave:e.target.value}}))} />
+                </label>
+                <label>Perfil externo (1 a 50)
+                  <input type="number" onWheel={bloquearScrollNumerico} min="1" max="50" value={(renewExternalDetails[s.id] || {}).perfil || 1} onChange={(e)=>setRenewExternalDetails(prev=>({...prev,[s.id]:{...(prev[s.id] || {}),perfil:e.target.value}}))} />
+                </label>
+                <label>PIN (opcional)
+                  <input value={(renewExternalDetails[s.id] || {}).pin || ""} onChange={(e)=>setRenewExternalDetails(prev=>({...prev,[s.id]:{...(prev[s.id] || {}),pin:e.target.value}}))} />
+                </label>
+              </div>
+            )}
             <label>Tiempo
               <select value={draft.tipo} onChange={(e) => setRenewalDraft(s.id, { tipo: e.target.value, cantidad: 1 })}>
                 <option value="dias">Días</option>
@@ -2246,7 +2406,11 @@ Cuenta para renovación
                 }}
               />
             </label>
-            <label>Ganancia neta de esta renovación (COP)
+            <label className="jcRenewFull">Fecha de renovación <small>También será la fecha de la ganancia</small>
+              <input type="date" value={renewalDates[s.id] || todayISO()}
+                onChange={(e) => setRenewalDates((prev) => ({ ...prev, [s.id]: e.target.value }))} />
+            </label>
+            <label className="jcRenewFull">Ganancia neta (COP)
               <input type="number" onWheel={bloquearScrollNumerico} min="0" step="1" inputMode="numeric"
                 placeholder="Ej. 8000"
                 value={renewalProfits[s.id] ?? ""}
@@ -2254,6 +2418,20 @@ Cuenta para renovación
               />
             </label>
             <button type="button" className="miniButton primaryMini" disabled={working} onClick={() => renewSubscription(s)}>Aplicar renovación</button>
+            {renewalDelivery?.id === s.id && (
+              <div className="jcRenewFull generatedDelivery" style={{minWidth:0, maxWidth:"100%", overflow:"hidden", marginTop:12}}>
+                <div className="generatedHeader"><strong>✅ Mensaje de entrega de la renovación</strong></div>
+                <textarea aria-label="Mensaje de entrega de la renovación" readOnly value={renewalDelivery.text} style={{width:"100%", minHeight:210, boxSizing:"border-box", resize:"vertical"}} />
+                <div className="inlineActions" style={{flexWrap:"wrap"}}>
+                  <button type="button" className="miniButton primaryMini" onClick={() => copyText(renewalDelivery.text)}>📋 Copiar mensaje</button>
+                  {renewalDelivery.cliente?.telefono && <button type="button" className="miniButton" onClick={async () => {
+                    await copyText(renewalDelivery.text);
+                    window.open(whatsappUrl(renewalDelivery.cliente.telefono, ""), "_blank", "noopener,noreferrer");
+                  }}>WhatsApp</button>}
+                </div>
+                <small>El mensaje se copia para pegarlo en WhatsApp con los emojis correctos.</small>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -2354,6 +2532,30 @@ Cuenta para renovación
   function renderAccountsTable(rows, emptyText) {
     if (rows.length === 0) return <div className="card emptyState">{emptyText}</div>;
     const visibleIds = rows.map((row) => row.id);
+    // Un mismo servicio puede tener varias filas (cada una con una duración).
+    // En Editar mostramos su nombre una sola vez y las duraciones reales del catálogo.
+    const editServiceGroups = [];
+    for (const service of data.servicios.filter((item) => item.activo !== false)) {
+      const key = normalizeText(service.nombre);
+      let group = editServiceGroups.find((item) => item.key === key);
+      if (!group) {
+        group = { key, nombre: service.nombre, servicios: [] };
+        editServiceGroups.push(group);
+      }
+      group.servicios.push(service);
+    }
+    const editingService = data.servicios.find((item) => String(item.id) === String(subscriptionEditForm.servicio_id));
+    const editingServiceGroupKey = normalizeText(editingService?.nombre);
+    const editingServiceGroup = editServiceGroups.find((item) => item.key === editingServiceGroupKey);
+    const editDurations = [];
+    for (const item of editingServiceGroup?.servicios || []) {
+      const tipo = item.duracion_tipo || "meses";
+      const cantidad = Number(item.duracion_cantidad || 1);
+      const key = `${tipo}:${cantidad}`;
+      if (!editDurations.some((duration) => duration.key === key)) {
+        editDurations.push({ key, tipo, cantidad, servicio_id: item.id });
+      }
+    }
     return (
 
       
@@ -2392,9 +2594,20 @@ Cuenta para renovación
                       ) }
                       <td><strong>{s.cliente?.nombre || "Cliente"}</strong>{s.cliente?.username && <small>@{s.cliente.username}</small>}</td>
                       <td>{editing ? (
-  <select value={subscriptionEditForm.servicio_id} onChange={(e) => setSubscriptionEditForm((prev) => ({ ...prev, servicio_id: e.target.value }))}>
-    {data.servicios.filter((service) => service.activo !== false).map((service) => (
-      <option key={service.id} value={service.id}>{serviceLabel(service)}</option>
+  <select aria-label="Servicio" value={editingServiceGroupKey} onChange={(e) => {
+    const group = editServiceGroups.find((item) => item.key === e.target.value);
+    if (!group) return;
+    // Mantener el servicio exacto si ya pertenece al grupo elegido.
+    const first = group.servicios[0];
+    setSubscriptionEditForm((prev) => ({
+      ...prev,
+      servicio_id: String(first.id),
+      duracion_tipo: first.duracion_tipo || "meses",
+      duracion_cantidad: Number(first.duracion_cantidad || 1)
+    }));
+  }}>
+    {editServiceGroups.map((group) => (
+      <option key={group.key} value={group.key}>{group.nombre}</option>
     ))}
   </select>
 ) : s.servicio?.nombre || "Servicio"}</td>
@@ -2457,7 +2670,38 @@ Cuenta para renovación
 </td>
                       <td><span className={status.className}>{status.text}</span></td>
                       <td>{editing ? <input type="date" value={subscriptionEditForm.fecha_inicio} onChange={(e) => setSubscriptionEditForm((prev) => ({ ...prev, fecha_inicio: e.target.value }))} /> : formatDate(s.fecha_inicio)}</td>
-                      <td>{formatDate(s.fecha_vencimiento)}</td>
+                      <td>{editing ? (
+                        <div style={{display:"grid",gap:6,minWidth:175}}>
+                          <label style={{fontSize:12,fontWeight:600}}>Tiempo del pedido</label>
+                          <select
+                            aria-label="Duración configurada para el servicio"
+                            style={{width:"100%",minWidth:170}}
+                            value={`${subscriptionEditForm.duracion_tipo}:${Number(subscriptionEditForm.duracion_cantidad)}`}
+                            onChange={(e) => {
+                              const selected = editDurations.find((duration) => duration.key === e.target.value);
+                              if (!selected) return;
+                              setSubscriptionEditForm((prev) => ({
+                                ...prev,
+                                duracion_tipo: selected.tipo,
+                                duracion_cantidad: selected.cantidad,
+                                // Con una cuenta asignada conservamos el ID del servicio del stock.
+                                // En pedidos sin asignación sí usamos la variante del catálogo.
+                                servicio_id: assignment ? prev.servicio_id : String(selected.servicio_id)
+                              }));
+                            }}
+                          >
+                            {!editDurations.some((duration) => duration.key === `${subscriptionEditForm.duracion_tipo}:${Number(subscriptionEditForm.duracion_cantidad)}`) && (
+                              <option value={`${subscriptionEditForm.duracion_tipo}:${Number(subscriptionEditForm.duracion_cantidad)}`}>
+                                Actual: {durationText(subscriptionEditForm.duracion_tipo, subscriptionEditForm.duracion_cantidad)} (no configurada)
+                              </option>
+                            )}
+                            {editDurations.map((duration) => (
+                              <option key={duration.key} value={duration.key}>{durationText(duration.tipo, duration.cantidad)}</option>
+                            ))}
+                          </select>
+                          <small>Nuevo vencimiento: {formatDate(addDuration(subscriptionEditForm.fecha_inicio, subscriptionEditForm.duracion_tipo, subscriptionEditForm.duracion_cantidad))}</small>
+                        </div>
+                      ) : formatDate(s.fecha_vencimiento)}</td>
                       <td><span className={`daysBadge ${daysTone(s.days)}`}>{remainingText(s.days)}</span></td>
                       <td>{wa ? (
   <button
@@ -4640,6 +4884,53 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
 
   return (
     <main className="adminShell">
+      <style jsx global>{`
+        /* Formulario de renovación de pedidos: diseño compacto y legible */
+        .renewDropdown.jcRenewForm {
+          width: min(330px, calc(100vw - 36px));
+          max-width: none;
+          box-sizing: border-box;
+          padding: 16px;
+          gap: 13px 12px;
+          grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
+          background: #0c1d33;
+          border: 1px solid #24527c;
+          border-radius: 15px;
+          box-shadow: 0 14px 34px #0007;
+        }
+        .renewDropdown.jcRenewForm .jcRenewFull { grid-column: 1 / -1; }
+        .renewDropdown.jcRenewForm label {
+          min-width: 0;
+          display: flex;
+          flex-direction: column;
+          gap: 7px;
+          color: #a9c9e8;
+          font-size: 12px;
+          font-weight: 600;
+          line-height: 1.35;
+          overflow-wrap: anywhere;
+        }
+        .renewDropdown.jcRenewForm label small {
+          display: block; color: #7fa4c5; font-size: 11px; font-weight: 400;
+        }
+        .renewDropdown.jcRenewForm input,
+        .renewDropdown.jcRenewForm select {
+          width: 100%; min-width: 0; height: 42px;
+          box-sizing: border-box;
+          border-radius: 9px; border: 1px solid #2b547e;
+          background: #08172a; padding: 9px 10px;
+          color: #f4faff; font-size: 13px;
+          outline: none;
+        }
+        .renewDropdown.jcRenewForm input:focus,
+        .renewDropdown.jcRenewForm select:focus {
+          border-color: #26a7ff; box-shadow: 0 0 0 3px #188def22;
+        }
+        .renewDropdown.jcRenewForm .primaryMini {
+          grid-column: 1 / -1; width: 100%; min-height: 42px;
+          margin-top: 4px; border-radius: 10px; font-size: 14px;
+        }
+      `}</style>
       {copyNotice && <div className="copyToast" role="status" aria-live="polite">Texto copiado <span>✓</span></div>}
       {(error || message) && (
         <div key={`${error ? "error" : "ok"}-${error || message}`} className={`jcActionToast ${error ? "jcActionToastError" : "jcActionToastSuccess"}`} role={error ? "alert" : "status"} aria-live={error ? "assertive" : "polite"}>

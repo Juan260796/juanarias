@@ -40,6 +40,14 @@ function addDurationISO(dateString, tipo, cantidad) {
   return `${targetYear}-${String(targetMonthIndex + 1).padStart(2, "0")}-${String(Math.min(d, lastDay)).padStart(2, "0")}`;
 }
 
+function diasVencidoColombia(fecha) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(fecha || ""))) return null;
+  const vencimiento = Date.parse(`${fecha}T00:00:00Z`);
+  if (!Number.isFinite(vencimiento) || new Date(vencimiento).toISOString().slice(0, 10) !== fecha) return null;
+  const hoy = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Bogota", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+  return Math.round((Date.parse(`${hoy}T00:00:00Z`) - vencimiento) / 86400000);
+}
+
 export async function POST(request) {
   const auth = await requireAdmin(request);
   if (auth.response) return auth.response;
@@ -55,7 +63,8 @@ export async function POST(request) {
   const proveedor_id = String(body.proveedor_id || "").trim() || null;
   const perfil = Number(body.perfil || 1);
   const ganancia_neta = Number(body.ganancia_neta);
-  const fecha_ganancia = String(body.fecha_ganancia || fecha_inicio || "").trim();
+  // La ganancia pertenece al día de inicio del pedido, no al día de carga.
+  const fecha_ganancia = fecha_inicio;
 
   if (!cliente_id || !servicio_id || !fecha_inicio || !correo) {
     return Response.json({ error: "Cliente, servicio, fecha y correo/acceso son obligatorios." }, { status: 400 });
@@ -80,6 +89,8 @@ export async function POST(request) {
   const durationQty = Number(servicio.duracion_cantidad || 1);
   const fecha_vencimiento = addDurationISO(fecha_inicio, durationType, durationQty);
   if (!fecha_vencimiento) return Response.json({ error: "No pudimos calcular el vencimiento." }, { status: 400 });
+  const diasVencido = diasVencidoColombia(fecha_vencimiento);
+  if (diasVencido === null || diasVencido > 30) return Response.json({ error: diasVencido === null ? "Fecha inválida." : `No se puede crear un pedido vencido hace ${diasVencido} días. Máximo permitido: 30 días.` }, { status: 400 });
 
   const { data: suscripcion, error: subError } = await supabase
     .from("suscripciones")

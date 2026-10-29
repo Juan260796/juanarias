@@ -26,6 +26,14 @@ function addDurationISO(dateString, tipo, cantidad) {
   return `${targetYear}-${String(targetMonthIndex + 1).padStart(2, "0")}-${String(Math.min(d, lastDay)).padStart(2, "0")}`;
 }
 
+function diasVencidoColombia(fecha) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(fecha || ""))) return null;
+  const vencimiento = Date.parse(`${fecha}T00:00:00Z`);
+  if (!Number.isFinite(vencimiento) || new Date(vencimiento).toISOString().slice(0, 10) !== fecha) return null;
+  const hoy = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Bogota", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+  return Math.round((Date.parse(`${hoy}T00:00:00Z`) - vencimiento) / 86400000);
+}
+
 async function recalcInventoryState(supabase, inventarioId) {
   if (!inventarioId) return;
   const { data: item } = await supabase
@@ -61,6 +69,9 @@ export async function POST(request) {
   if (!cliente_id || !servicio_id || !fecha_inicio || !fecha_vencimiento) {
     return Response.json({ error: "Cliente, servicio y fechas son obligatorios." }, { status: 400 });
   }
+  const diasVencido = diasVencidoColombia(fecha_vencimiento);
+  if (diasVencido === null) return Response.json({ error: "Fecha de vencimiento inválida." }, { status: 400 });
+  if (diasVencido > 30) return Response.json({ error: `No se puede crear un pedido vencido hace ${diasVencido} días. Máximo permitido: 30 días.` }, { status: 400 });
   if (!Number.isFinite(ganancia_neta) || ganancia_neta < 0) {
     return Response.json({ error: "Escribe una ganancia neta válida para el pedido." }, { status: 400 });
   }
@@ -157,6 +168,9 @@ if (action === "marcar_reportada") {
   // Una renovación crea una ganancia independiente; no modifica la ganancia original.
   let renewalProfit = null;
   if (body.es_renovacion === true) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(body.fecha_inicio || ""))) {
+      return Response.json({ error: "Selecciona la fecha de renovación para registrar correctamente la ganancia." }, { status: 400 });
+    }
     const rawProfit = body.ganancia_renovacion;
     renewalProfit = Number(rawProfit);
     if (rawProfit === undefined || rawProfit === null || rawProfit === "" ||
@@ -202,9 +216,78 @@ if (typeof body.reporte_vencimiento === "boolean") {
 
 
 
+// Modos de renovación que no usan una cuenta anterior del stock.
+const modoRenovacion = body.es_renovacion === true ? String(body.modo_renovacion || (body.cambiar_cuenta ? "nueva" : "actual")) : "";
+if (body.es_renovacion && !["actual", "nueva", "solo", "externo"].includes(modoRenovacion)) {
+  return Response.json({error:"Tipo de renovación no válido."}, {status:400});
+}
+let newExternalAccountId = null;
+if (modoRenovacion === "externo") {
+  const creds = body.credenciales_externas || {};
+  const correo = String(creds.correo || "").trim();
+  const perfil = Number(creds.perfil || 1);
+  if (!correo || !Number.isInteger(perfil) || perfil < 1 || perfil > 50) {
+    return Response.json({error:"Indica un correo/acceso y un perfil entre 1 y 50."}, {status:400});
+  }
+  const {data: service, error: serviceErr} = await supabase.from("servicios")
+    .select("id,nombre,tipo_entrega").eq("id",current.servicio_id).single();
+  if (serviceErr || !service) return Response.json({error:serviceErr?.message || "Servicio no encontrado."},{status:400});
+  const lower = String(service.nombre || "").toLowerCase();
+  const gemini = lower.startsWith("gemini");
+  const {data: newAccount, error: newAccountErr} = await supabase.from("inventario_cuentas").insert({
+    servicio_id:current.servicio_id, proveedor_id:creds.proveedor_id || null,
+    correo, clave:String(creds.clave || "").trim() || null, pin:null,
+    perfiles_pins: creds.pin ? {[String(perfil)]:String(creds.pin)} : {},
+    grupo:gemini ? correo : null, perfil:null, etiqueta:"externa",
+    notas:"Cuenta externa / perfil comprado por fuera (renovación)",
+    estado:"agotada", cupos_total:Math.max(1,perfil),
+    duracion_tipo:String(body.duracion_tipo || "meses"),duracion_cantidad:Number(body.duracion_cantidad || 1),
+    fecha_carga:String(body.fecha_inicio),fecha_vencimiento:String(body.fecha_vencimiento)
+  }).select("id").single();
+  if (newAccountErr || !newAccount) return Response.json({error:newAccountErr?.message || "No se pudo crear la cuenta externa."},{status:400});
+  newExternalAccountId = newAccount.id;
+}
+
+// Renovación sin credenciales o por fuera: liberar cupos anteriores.
+// La renovación externa agrega una asignación dedicada a su nueva cuenta.
+if (modoRenovacion === "solo" || modoRenovacion === "externo") {
+  const {data: currentAssignments,error: assignmentsError}=await supabase.from("inventario_asignaciones")
+    .select("id,inventario_id").eq("suscripcion_id",id).eq("activo",true);
+  if (assignmentsError) {
+    if (newExternalAccountId) await supabase.from("inventario_cuentas").delete().eq("id",newExternalAccountId);
+    return Response.json({error:assignmentsError.message},{status:400});
+  }
+  if (modoRenovacion === "externo") {
+    const creds=body.credenciales_externas || {};
+    const {error: assignError}=await supabase.from("inventario_asignaciones").insert({
+      inventario_id:newExternalAccountId, suscripcion_id:id, cliente_id:current.cliente_id,
+      cupo_numero:Number(creds.perfil || 1),correo_cliente:null,
+      activo:true,es_reemplazo:false,reemplaza_asignacion_id:null
+    });
+    if(assignError){
+      await supabase.from("inventario_cuentas").delete().eq("id",newExternalAccountId);
+      return Response.json({error:assignError.message},{status:400});
+    }
+  }
+  if ((currentAssignments || []).length) {
+    const {error:releaseError}=await supabase.from("inventario_asignaciones").update({activo:false})
+      .in("id",currentAssignments.map(a=>a.id));
+    if(releaseError){
+      if(newExternalAccountId){
+        await supabase.from("inventario_asignaciones").delete().eq("inventario_id",newExternalAccountId).eq("suscripcion_id",id);
+        await supabase.from("inventario_cuentas").delete().eq("id",newExternalAccountId);
+      }
+      return Response.json({error:releaseError.message},{status:400});
+    }
+    for(const inventoryId of new Set(currentAssignments.map(a=>a.inventario_id).filter(Boolean))) {
+      await recalcInventoryState(supabase,inventoryId);
+    }
+  }
+}
+
 // RENOVACIÓN EN LA MISMA CUENTA: recuperar la última asignación
 // incluso si fue liberada al vencer hace más de 2 días.
-if (body.es_renovacion === true && body.cambiar_cuenta !== true) {
+if (body.es_renovacion === true && modoRenovacion === "actual") {
   const { data: history, error: historyError } = await supabase
     .from("inventario_asignaciones")
     .select("*")
@@ -261,7 +344,7 @@ if (body.es_renovacion === true && body.cambiar_cuenta !== true) {
 // CAMBIO DE CUENTA AL RENOVAR
 if (
   body.es_renovacion === true &&
-  body.cambiar_cuenta === true
+  modoRenovacion === "nueva"
 ) {
   const nuevoInventarioId = String(body.nuevo_inventario_id || "");
   const nuevoCupo = Number(body.nuevo_cupo);
@@ -413,7 +496,7 @@ if (Object.prototype.hasOwnProperty.call(body, "fecha_reporte")) {
 }
 
   const wantsEditableFields = Boolean(
-  (body.fecha_inicio || body.servicio_id || Object.prototype.hasOwnProperty.call(body, "cupo_numero"))
+  (body.fecha_inicio || body.servicio_id || Object.prototype.hasOwnProperty.call(body, "cupo_numero") || Object.prototype.hasOwnProperty.call(body, "duracion_tipo"))
   && !body.es_renovacion
 );
 
@@ -503,68 +586,38 @@ changes.fecha_ganancia = nextStart;
 changes.servicio_id = nextServiceId;
 // Solo recalcular la fecha de vencimiento si realmente
 // cambió la fecha de inicio.
-if (nextStart !== current.fecha_inicio) {
-  // Conservar la duración REAL que tiene actualmente el pedido.
-  // NO tomar la duración del servicio ni la del inventario.
-
-  const currentStart = String(current.fecha_inicio || "").trim();
-  const currentEnd = String(current.fecha_vencimiento || "").trim();
-
-  if (!currentStart || !currentEnd) {
-    return Response.json(
-      { error: "El pedido no tiene fechas suficientes para conservar su duración." },
-      { status: 400 }
-    );
+if (nextStart !== current.fecha_inicio || Object.prototype.hasOwnProperty.call(body, "duracion_tipo")) {
+  let recalculatedExpiry = "";
+  if (Object.prototype.hasOwnProperty.call(body, "duracion_tipo")) {
+    const tipo = String(body.duracion_tipo || "");
+    const qty = Number(body.duracion_cantidad);
+    const max = tipo === "dias" ? 365 : tipo === "meses" ? 12 : tipo === "anios" ? 1 : 0;
+    if (!max || !Number.isInteger(qty) || qty < 1 || qty > max) {
+      return Response.json({ error: "Tiempo del pedido inválido. Usa hasta 365 días, 12 meses o 1 año." }, { status: 400 });
+    }
+    recalculatedExpiry = addDurationISO(nextStart, tipo, qty);
+  } else {
+    // Compatibilidad: conservar la duración anterior si solo cambió la fecha.
+    const currentStart = String(current.fecha_inicio || "");
+    const currentEnd = String(current.fecha_vencimiento || "");
+    const monthDiff = (Number(currentEnd.slice(0, 4)) - Number(currentStart.slice(0, 4))) * 12 + (Number(currentEnd.slice(5, 7)) - Number(currentStart.slice(5, 7)));
+    const days = Math.round((Date.parse(`${currentEnd}T00:00:00Z`) - Date.parse(`${currentStart}T00:00:00Z`)) / 86400000);
+    if (!Number.isFinite(days) || days < 1) return Response.json({ error: "La duración original del pedido no es válida." }, { status: 400 });
+    recalculatedExpiry = monthDiff >= 1 && addDurationISO(currentStart, "meses", monthDiff) === currentEnd
+      ? addDurationISO(nextStart, "meses", monthDiff)
+      : addDurationISO(nextStart, "dias", days);
   }
-
-  const currentStartDate = new Date(`${currentStart}T00:00:00`);
-  const currentEndDate = new Date(`${currentEnd}T00:00:00`);
-
-  if (
-    Number.isNaN(currentStartDate.getTime()) ||
-    Number.isNaN(currentEndDate.getTime()) ||
-    currentEndDate <= currentStartDate
-  ) {
-    return Response.json(
-      { error: "Las fechas actuales del pedido no son válidas." },
-      { status: 400 }
-    );
-  }
-
-  // Primero intentamos determinar si la duración actual está expresada en meses.
-  const monthDiff =
-    (currentEndDate.getFullYear() - currentStartDate.getFullYear()) * 12 +
-    (currentEndDate.getMonth() - currentStartDate.getMonth());
-
-  let durationType = "dias";
-  let durationQty = Math.round(
-    (currentEndDate - currentStartDate) / (1000 * 60 * 60 * 24)
-  );
-
-  // Si al sumar esos meses obtenemos exactamente la fecha actual
-  // de vencimiento, conservamos la duración como meses.
-  if (
-    monthDiff >= 1 &&
-    addDurationISO(currentStart, "meses", monthDiff) === currentEnd
-  ) {
-    durationType = "meses";
-    durationQty = monthDiff;
-  }
-
-  const recalculatedExpiry = addDurationISO(
-    nextStart,
-    durationType,
-    durationQty
-  );
-
-  if (!recalculatedExpiry) {
-    return Response.json(
-      { error: "No se pudo recalcular la fecha final." },
-      { status: 400 }
-    );
-  }
-
+  if (!recalculatedExpiry) return Response.json({ error: "No se pudo calcular el nuevo vencimiento." }, { status: 400 });
   changes.fecha_vencimiento = recalculatedExpiry;
+
+  // Reactivación explícita solo cuando antes estaba archivado y el nuevo vencimiento es futuro.
+  const hoyColombia = new Intl.DateTimeFormat("en-CA", {timeZone:"America/Bogota",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
+  if (body.reactivar_al_editar === true && current.activo === false &&
+      String(current.fecha_vencimiento || "") <= hoyColombia && recalculatedExpiry > hoyColombia) {
+    changes.activo = true;
+    changes.reporte_vencimiento = false;
+    changes.fecha_reporte = null;
+  }
 }
     if (inventory?.etiqueta === "externa") {
       const { error: externalDateError } = await supabase.from("inventario_cuentas").update({
@@ -632,7 +685,7 @@ if (body.es_renovacion === true) {
       cliente_nombre: clientRow?.nombre || "Cliente",
       servicio_nombre: serviceRow?.nombre || "Servicio",
       ganancia_neta: renewalProfit,
-      fecha_ganancia: String(changes.fecha_inicio || new Date().toISOString().slice(0, 10))
+      fecha_ganancia: String(changes.fecha_inicio)
     });
   if (renewalInsertError) {
     return Response.json({
