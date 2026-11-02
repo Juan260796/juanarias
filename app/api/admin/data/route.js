@@ -36,6 +36,48 @@ async function recalcInventoryState(supabase, inventarioId) {
   await supabase.from("inventario_cuentas").update({ estado }).eq("id", inventarioId);
 }
 
+// Libera el perfil desde el primer día posterior al vencimiento.
+// El pedido permanece en el historial (y en Cuentas vencidas), con su
+// ganancia y su contador intactos. Una renovación puede recuperar el
+// perfil anterior solo si continúa libre.
+async function releaseOneDayExpiredAssignments(supabase, todayValue) {
+  const today = parseISO(todayValue);
+  if (!today) return;
+  today.setUTCDate(today.getUTCDate() - 1);
+  const cutoff = toISO(today);
+
+  const { data: expired, error: subsError } = await supabase
+    .from("suscripciones")
+    .select("id")
+    .lte("fecha_vencimiento", cutoff);
+  if (subsError) throw subsError;
+  if (!expired?.length) return;
+
+  // Consultamos por lotes para no sobrepasar el tamaño de las peticiones.
+  const affectedAccounts = new Set();
+  for (let pos = 0; pos < expired.length; pos += 150) {
+    const ids = expired.slice(pos, pos + 150).map(s => s.id);
+    const { data: activeAssignments, error: listError } = await supabase
+      .from("inventario_asignaciones")
+      .select("id,inventario_id")
+      .in("suscripcion_id", ids)
+      .eq("activo", true);
+    if (listError) throw listError;
+    if (!activeAssignments?.length) continue;
+
+    const { error: releaseError } = await supabase
+      .from("inventario_asignaciones")
+      .update({ activo: false })
+      .in("id", activeAssignments.map(a => a.id))
+      .eq("activo", true);
+    if (releaseError) throw releaseError;
+    activeAssignments.forEach(a => { if (a.inventario_id) affectedAccounts.add(a.inventario_id); });
+  }
+  for (const accountId of affectedAccounts) {
+    await recalcInventoryState(supabase, accountId);
+  }
+}
+
 async function archiveFiveDayExpired(supabase, todayValue) {
   const cutoff = cutoffFiveDaysExpired(todayValue);
   if (!cutoff) return new Set();
@@ -163,6 +205,11 @@ export async function GET(request) {
   const { supabase } = auth;
   const requestUrl = new URL(request.url);
   const today = requestUrl.searchParams.get("today") || "";
+  try {
+    await releaseOneDayExpiredAssignments(supabase, today);
+  } catch (error) {
+    return Response.json({ error: "Liberación automática de cupos: " + error.message }, { status: 500 });
+  }
   const archivedIds = await archiveFiveDayExpired(supabase, today);
   await archiveExpiredInventory(supabase, today);
   await cleanupStaleAssignments(supabase);
@@ -248,10 +295,7 @@ let suscripcionesRes = await supabase
   const plantillas_mensajes = templatesError ? [] : (templatesData || []);
 
   const allSubscriptions = suscripcionesRes.data || [];
-  // Se conservan en la respuesta los pedidos archivados automaticamente:
-  // deben seguir consultables en Cuentas vencidas aunque activo=false.
-  // Solo ocultamos los registros excluidos por eliminacion manual.
-  const visibleSubscriptions = allSubscriptions.filter((item) => item.excluido_conteo !== true);
+  const visibleSubscriptions = allSubscriptions.filter((item) => !archivedIds.has(item.id) && item.excluido_conteo !== true);
   const order_counts = {};
   for (const item of allSubscriptions) {
     // Solo excluimos pedidos que se eliminaron manualmente en versiones anteriores.
