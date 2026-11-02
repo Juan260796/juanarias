@@ -270,12 +270,14 @@ const REGLAS_PREDETERMINADAS = `¡IMPORTANTE!
 ❌Prohibido compartir la pantalla con otras personas
 🚫Si viola alguna de las reglas, la pantalla quedará suspendida.🚫`;
 
-const VARIABLES_PLANTILLA = ["cliente", "servicio", "tiempo", "correo", "clave", "perfil", "pin", "proveedor", "fecha_creacion", "fecha_vencimiento", "grupo", "correo_cliente"];
+const VARIABLES_PLANTILLA = ["cliente", "servicio", "tiempo", "correo", "clave", "perfil", "pin", "proveedor", "fecha_seleccionada", "fecha_vencimiento", "grupo", "correo_cliente"];
 
 // Una plantilla se comparte entre las duraciones del mismo servicio.
 function claveServicioPlantilla(nombre) {
+  // Una cuenta cargada para 1 año puede vender perfiles de 30 días.
+  // La duración identifica el producto vendido, no una cuenta distinta.
   return normalizeText(nombre)
-    .replace(/\s*[-–—|]\s*\d+\s*(dias?|mes(?:es)?|anos?)\s*$/i, "")
+    .replace(/\s*(?:[-–—|]\s*)?\d+\s*(?:dias?|mes(?:es)?|anos?)\s*$/i, "")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -392,19 +394,41 @@ const [profitEditValue, setProfitEditValue] = useState("");
   const [deleteMode, setDeleteMode] = useState({});
   const [showCredentialsId, setShowCredentialsId] = useState("");
 
-  const api = useCallback(async (path, options = {}, accessToken = token) => {
-    const res = await fetch(path, {
-      ...options,
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${accessToken}`,
-        ...(options.headers || {})
+  // Consultar la sesión vigente en cada solicitud: Supabase renueva los tokens
+  // automáticamente, pero guardar uno en estado puede dejarlo desactualizado.
+  const api = useCallback(async (path, options = {}, accessToken = null) => {
+    const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+    if (sessionError) throw new Error("No se pudo comprobar la sesión. Intenta nuevamente.");
+
+    const send = async (bearer) => {
+      const res = await fetch(path, {
+        ...options,
+        headers: {
+          "Content-Type": "application/json",
+          ...(options.headers || {}),
+          Authorization: `Bearer ${bearer}`
+        }
+      });
+      const json = await res.json().catch(() => ({}));
+      return { res, json };
+    };
+
+    let bearer = sessionData?.session?.access_token || accessToken;
+    if (!bearer) throw new Error("Tu sesión ha terminado. Inicia sesión nuevamente.");
+
+    let { res, json } = await send(bearer);
+    if (res.status === 401) {
+      // Si el token venció durante la operación, renovarlo y reintentar una vez.
+      const { data: renewed, error: renewError } = await supabase.auth.refreshSession();
+      const freshToken = renewed?.session?.access_token;
+      if (renewError || !freshToken) {
+        throw new Error("Tu sesión ha terminado. Inicia sesión nuevamente.");
       }
-    });
-    const json = await res.json().catch(() => ({}));
+      ({ res, json } = await send(freshToken));
+    }
     if (!res.ok) throw new Error(json.error || "Ocurrió un error.");
     return json;
-  }, [token]);
+  }, []);
 
   async function marcarReportada(id) {
   try {
@@ -749,98 +773,19 @@ const [profitEditValue, setProfitEditValue] = useState("");
     ).slice(0, 8);
   }, [deliveryClientQuery, data.clientes]);
 
- const deliveryInventoryOptions = useMemo(() => {
-  if (!selectedDeliveryService) return [];
-
-  const normalize = (text) =>
-    normalizeText(text)
-      .replace(/\b\d+\s*(mes|meses|día|dias|días)\b/g, "")
-      .trim();
-
-  const requestedName = normalize(selectedDeliveryService.nombre);
-
-  const requestedDays = (() => {
-    const tipo = deliveryForm.duracion_tipo;
-    const cantidad = Number(deliveryForm.duracion_cantidad || 1);
-
-    if (tipo === "dias" || tipo === "día" || tipo === "días") {
-      return cantidad;
-    }
-
-    if (tipo === "meses" || tipo === "mes") {
-      return cantidad * 30;
-    }
-
-    return 30;
-  })();
-
-
-  return availableInventory.filter((item) => {
-
- 
-
-    const inventoryService = data.servicios.find(
-      (service) => service.id === item.servicio_id
-    );
-
-    if (!inventoryService) return false;
-
-
-    const inventoryName = normalize(inventoryService.nombre);
-
-    
-
-
-    // Debe coincidir el nombre del servicio
-    if (
-      !inventoryName.includes(requestedName) &&
-      !requestedName.includes(inventoryName)
-    ) {
-      return false;
-    }
-
-
-    // Validar duración de la cuenta
-    const inventoryDays = (() => {
-  const cantidad = Number(item.duracion_cantidad || 1);
-
-  if (
-    item.duracion_tipo === "mes" ||
-    item.duracion_tipo === "meses"
-  ) {
-    return cantidad * 30;
-  }
-
-  if (
-    item.duracion_tipo === "dia" ||
-    item.duracion_tipo === "dias" ||
-    item.duracion_tipo === "días"
-  ) {
-    return cantidad;
-  }
-
-  return 0;
-})();
-
-
-
-    // acepta hasta 4 días menos de margen
-    if (inventoryDays + 4 < requestedDays) {
-      return false;
-    }
-
-
-    return true;
-
-  });
-
-}, [
-  availableInventory,
-  selectedDeliveryService,
-  deliveryForm.duracion_tipo,
-  deliveryForm.duracion_cantidad,
-  data.servicios
-]);
+  // El stock disponible depende de cupos realmente libres, no de la duracion
+  // historica de la cuenta (que puede estar vacia o ser diferente de la venta).
+  // Coincidencia por nombre normalizado para las variantes de duración del servicio.
+  const deliveryInventoryOptions = useMemo(() => {
+    if (!selectedDeliveryService) return [];
+    const serviceKey = (nombre) => claveServicioPlantilla(nombre || "");
+    const selectedKey = serviceKey(selectedDeliveryService.nombre);
+    return availableInventory.filter((item) => {
+      const inventarioServicio = data.servicios.find((service) => String(service.id) === String(item.servicio_id));
+      const nombreInventario = inventarioServicio?.nombre || item.servicios?.nombre || "";
+      return Boolean(nombreInventario && serviceKey(nombreInventario) === selectedKey);
+    });
+  }, [availableInventory, selectedDeliveryService, data.servicios]);
 
   const selectedInventoryItem = useMemo(
     () => (data.inventario || []).find((item) => item.id === deliveryForm.inventario_id) || null,
@@ -1265,10 +1210,11 @@ const [profitEditValue, setProfitEditValue] = useState("");
         cliente, servicio: service?.nombre || "Servicio", tiempo: durationLabel,
         correo: item.correo || "", clave: item.clave || "", perfil: String(cupo || ""),
         pin: profilePin, proveedor: provider,
-        // La fecha es la de CREACIÓN del pedido, no la de inicio del servicio.
-        fecha_creacion: fechaCortaMensaje(todayISO()),
-        // Compatibilidad con plantillas antiguas que ya usaban {fecha_inicio}.
-        fecha_inicio: fechaCortaMensaje(todayISO()),
+        // Fecha elegida por el usuario para la compra (no created_at ni fecha actual).
+        fecha_seleccionada: fechaCortaMensaje(sub.fecha_inicio),
+        // Las plantillas antiguas siguen funcionando, pero ahora usan la fecha elegida.
+        fecha_creacion: fechaCortaMensaje(sub.fecha_inicio),
+        fecha_inicio: fechaCortaMensaje(sub.fecha_inicio),
         fecha_vencimiento: formatDate(sub.fecha_vencimiento), grupo: item.grupo || "",
         correo_cliente: clientEmail
       };
@@ -1353,6 +1299,7 @@ Disculpa las molestias ${String.fromCodePoint(0x1F64F, 0x1F3FE)}`);
         body: JSON.stringify({
   id: selectedInventoryItem.id,
   action: "asignar_nuevo_pedido",
+  servicio_id: selectedDeliveryService.id,
   cliente_id: selectedDeliveryClient.id,
   fecha_inicio: deliveryForm.fecha_inicio || todayISO(),
   cupo_numero: chosenSlot,
@@ -1941,8 +1888,9 @@ if (cambiarCuenta && (!nuevoInventarioId || !nuevoCupo)) {
         cliente, servicio: service?.nombre || "Servicio", tiempo: durationLabel,
         correo: item.correo || "", clave: item.clave || "", perfil: String(cupo),
         pin, proveedor: provider,
-        fecha_creacion: fechaCortaMensaje(todayISO()),
-        fecha_inicio: fechaCortaMensaje(todayISO()),
+        fecha_seleccionada: fechaCortaMensaje(sub.fecha_inicio),
+        fecha_creacion: fechaCortaMensaje(sub.fecha_inicio),
+        fecha_inicio: fechaCortaMensaje(sub.fecha_inicio),
         fecha_vencimiento: formatDate(sub.fecha_vencimiento),
         grupo: item.grupo || "", correo_cliente: assignmentData.correo_cliente || ""
       }));
@@ -1997,7 +1945,10 @@ if (cambiarCuenta && (!nuevoInventarioId || !nuevoCupo)) {
   }
 
   function selectService(service) {
-    const hasStock = availableInventory.some((item) => item.servicio_id === service.id);
+    const hasStock = availableInventory.some((item) => {
+      const stockService = data.servicios.find((x) => String(x.id) === String(item.servicio_id));
+      return claveServicioPlantilla(stockService?.nombre || item.servicios?.nombre) === claveServicioPlantilla(service.nombre);
+    });
     setSubForm((prev) => ({ ...prev, servicio_id: service.id }));
     setDeliveryForm((prev) => ({
       ...prev,
@@ -2022,7 +1973,10 @@ if (cambiarCuenta && (!nuevoInventarioId || !nuevoCupo)) {
     const normalized = normalizeText(value);
     const exact = data.servicios.find((service) => service.activo && normalizeText(serviceLabel(service)) === normalized);
     if (exact) {
-      const hasStock = availableInventory.some((item) => item.servicio_id === exact.id);
+      const hasStock = availableInventory.some((item) => {
+        const stockService = data.servicios.find((x) => String(x.id) === String(item.servicio_id));
+        return claveServicioPlantilla(stockService?.nombre || item.servicios?.nombre) === claveServicioPlantilla(exact.nombre);
+      });
       setSubForm((prev) => ({ ...prev, servicio_id: exact.id }));
       setDeliveryForm((prev) => ({ ...prev, servicio_id: exact.id, inventario_id: "", cupo_numero: "", correo_cliente: "" }));
       setOrderSource(hasStock ? "stock" : "external");
@@ -2856,6 +2810,15 @@ Cuenta para renovación
           {selectedService && (
             <>
               <div className="formSectionTitle"><span>3</span><div><h2>Tipo de entrega</h2><p>Elige de dónde salen las credenciales de este pedido.</p></div></div>
+              <div style={{display:"flex",justifyContent:"flex-end",marginBottom:10}}>
+                <button type="button" className="miniButton" disabled={working} onClick={async () => {
+                  setWorking(true);
+                  setError("");
+                  try { await refresh(); setMessage("Disponibilidad del stock actualizada."); }
+                  catch (e) { setError(e.message || "No se pudo actualizar el stock."); }
+                  finally { setWorking(false); }
+                }}>↻ Actualizar cupos del stock</button>
+              </div>
               <div className="orderSourceGrid">
                 {orderInventoryOptions.length > 0 && (
                   <button type="button" className={`orderSourceCard ${orderSource === "stock" ? "active" : ""}`} onClick={() => { setOrderSource("stock"); setGeneratedDelivery(null); }}>
@@ -3974,7 +3937,7 @@ async function saveProfitEdit(item) {
     const ejemplo = {
       cliente: "María Pérez", servicio: servicio?.nombre || "Netflix", tiempo: "1 mes",
       correo: "cuenta@ejemplo.com", clave: "clave-ejemplo", perfil: "2", pin: "1234",
-      proveedor: "JU", fecha_creacion: "17 octubre", fecha_inicio: "17 octubre", fecha_vencimiento: "17/11/2026",
+      proveedor: "JU", fecha_seleccionada: "17 octubre", fecha_creacion: "17 octubre", fecha_inicio: "17 octubre", fecha_vencimiento: "17/11/2026",
       grupo: "familia@ejemplo.com", correo_cliente: "cliente@gmail.com"
     };
     return (
@@ -4011,7 +3974,7 @@ async function saveProfitEdit(item) {
                   <div className="jcTemplateTokens">
                     {VARIABLES_PLANTILLA.map((variable) => <button type="button" key={variable} className="miniButton" onClick={() => copyText(`{${variable}}`)}>{`{${variable}}`}</button>)}
                   </div>
-                  <p className="fieldHint">Las variables se rellenan automáticamente al generar el pedido. {`{fecha_creacion}`} muestra, por ejemplo, «17 octubre».</p>
+                  <p className="fieldHint">Las variables se rellenan automáticamente al generar el pedido. {`{fecha_seleccionada}`} usa la fecha de inicio seleccionada en el pedido; por ejemplo, «17 octubre».</p>
                 </div>
                 <label>Texto del mensaje
                   <textarea rows={14} value={plantillaContenido} onChange={(e) => setPlantillaContenido(e.target.value)} placeholder={`🎬 {servicio} x{tiempo}\nCliente: {cliente}\nCorreo: {correo}\nClave: {clave}\nPerfil: {perfil}\nPIN: {pin}`} required style={{minHeight:260, whiteSpace:"pre-wrap"}} />

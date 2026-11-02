@@ -264,6 +264,16 @@ const changes = {
 
     const serviceResult = await getService(auth.supabase, validation.item.servicio_id);
     if (serviceResult.error) return Response.json({ error: serviceResult.error }, { status: 400 });
+    // Variantes de duración de un mismo servicio pueden compartir stock.
+    // Validar en servidor que nunca se asigne stock a otro servicio distinto.
+    const requestedServiceId = String(body.servicio_id || validation.item.servicio_id);
+    const selectedServiceResult = requestedServiceId === validation.item.servicio_id
+      ? serviceResult : await getService(auth.supabase, requestedServiceId);
+    if (selectedServiceResult.error) return Response.json({ error: selectedServiceResult.error }, { status: 400 });
+    const key = (name) => normalizeName(name).replace(/\s*[-–—|]\s*\d+\s*(dias?|mes(?:es)?|anos?)\s*$/i, "").trim();
+    if (key(selectedServiceResult.data.nombre) !== key(serviceResult.data.nombre)) {
+      return Response.json({ error: "La cuenta de stock pertenece a otro servicio." }, { status: 400 });
+    }
     if (effectiveDeliveryType(serviceResult.data) === "gemini" && !correo_cliente) {
       return Response.json({ error: "Para Gemini escribe el correo Gmail del cliente." }, { status: 400 });
     }
@@ -280,7 +290,7 @@ const changes = {
       .from("suscripciones")
       .insert({
         cliente_id,
-        servicio_id: validation.item.servicio_id,
+        servicio_id: requestedServiceId,
         fecha_inicio,
         fecha_vencimiento,
         ganancia_neta,
