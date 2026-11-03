@@ -61,6 +61,8 @@ export async function POST(request) {
   const clave = String(body.clave || "").trim() || null;
   const pin = String(body.pin || "").trim() || null;
   const proveedor_id = String(body.proveedor_id || "").trim() || null;
+  const grupo = String(body.grupo || "").trim();
+  const correo_cliente = String(body.correo_cliente || "").trim();
   const perfil = Number(body.perfil || 1);
   const ganancia_neta = Number(body.ganancia_neta);
   // La ganancia pertenece al día de inicio del pedido, no al día de carga.
@@ -100,6 +102,11 @@ export async function POST(request) {
   if (subError) return Response.json({ error: subError.message }, { status: 400 });
 
   const type = effectiveDeliveryType(servicio);
+  const esYoutube = normalizeName(servicio.nombre).includes("youtube");
+  if (esYoutube && grupo && !correo_cliente) {
+    await supabase.from("suscripciones").delete().eq("id", suscripcion.id);
+    return Response.json({ error: "Escribe el correo Gmail del cliente para el grupo familiar." }, { status: 400 });
+  }
   const perfiles_pins = pin ? { [String(perfil)]: pin } : {};
   const accountInsert = {
     servicio_id,
@@ -108,7 +115,7 @@ export async function POST(request) {
     clave,
     pin: null,
     perfiles_pins,
-    grupo: type === "gemini" ? correo : null,
+    grupo: esYoutube && grupo ? grupo : (type === "gemini" ? correo : null),
     perfil: null,
     etiqueta: "externa",
     notas: "Cuenta externa / perfil comprado por fuera",
@@ -138,7 +145,7 @@ export async function POST(request) {
       suscripcion_id: suscripcion.id,
       cliente_id,
       cupo_numero: perfil,
-      correo_cliente: type === "gemini" ? correo : null,
+      correo_cliente: esYoutube && grupo ? (correo_cliente || null) : (type === "gemini" ? correo : null),
       activo: true,
       es_reemplazo: false,
       reemplaza_asignacion_id: null

@@ -262,7 +262,7 @@ export default function Cliente() {
     <main className="dashboard">
       <header className="topbar"><div className="clientBrand"><img className="brandLogo clientHeaderLogo" src="/logo.jpg" alt="Juan Cuentas" /><div><strong>JUAN CUENTAS</strong><span>Panel del cliente</span></div></div><button className="linkButton" onClick={logout}>Cerrar sesión</button></header>
       <section className="content">
-        <div className="welcome"><p>Hola 👋</p><h1>{cliente?.nombre || "Cliente"}</h1><div className="muted">Consulta tus servicios, credenciales, promociones y avance de fidelidad.</div></div>
+        <div className="welcome"><p>Hola 👋</p><h1>{cliente?.nombre || "Cliente"}</h1><div className="muted">Consulta tus servicios y promociones 💙 ¡Cada compra te acerca a un premio especial! 🎁🏆</div></div>
 
         <section className={`loyaltyCard ${justWonReward ? "unlocked" : loyaltyCycleCount >= 7 ? "near" : ""}`}>
           <div className="loyaltyTop">

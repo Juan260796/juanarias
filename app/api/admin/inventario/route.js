@@ -9,6 +9,10 @@ function normalizeName(value) {
     .trim();
 }
 
+function isYoutubeService(service) {
+  return normalizeName(service?.nombre).includes("youtube");
+}
+
 function effectiveDeliveryType(service) {
   const name = normalizeName(service?.nombre);
   if (name.startsWith("gemini")) return "gemini";
@@ -158,7 +162,9 @@ export async function POST(request) {
   if (!Number.isInteger(cupos_total) || cupos_total < 1) return Response.json({ error: "El número de perfiles/cupos no es válido." }, { status: 400 });
   const perfiles_pins = tipo === "estandar" ? normalizeProfilePins(body.perfiles_pins, cupos_total, pin) : {};
 
-  if (tipo === "estandar" && !correo) return Response.json({ error: "El correo/acceso es obligatorio para una cuenta estándar." }, { status: 400 });
+  const youtubeFamiliar = isYoutubeService(serviceResult.data) && Boolean(grupo);
+  if (isYoutubeService(serviceResult.data) && !grupo) return Response.json({ error: "Escribe el nombre del grupo familiar de YouTube." }, { status: 400 });
+  if (tipo === "estandar" && !correo && !youtubeFamiliar) return Response.json({ error: "El correo/acceso es obligatorio para una cuenta estándar." }, { status: 400 });
   if (tipo === "chatgpt" && !correo) return Response.json({ error: "El correo de ChatGPT es obligatorio." }, { status: 400 });
   if (tipo === "gemini" && !grupo) return Response.json({ error: "Escribe el correo del grupo de Gemini." }, { status: 400 });
 
@@ -166,11 +172,11 @@ export async function POST(request) {
   const insert = {
     servicio_id,
     proveedor_id,
-    correo: tipo === "gemini" ? grupo : correo,
-    clave,
+    correo: tipo === "gemini" || youtubeFamiliar ? grupo : correo,
+    clave: youtubeFamiliar ? null : clave,
     pin: null,
-    perfiles_pins,
-    grupo: tipo === "gemini" ? grupo : null,
+    perfiles_pins: youtubeFamiliar ? {} : perfiles_pins,
+    grupo: tipo === "gemini" || youtubeFamiliar ? grupo : null,
     perfil: null,
     etiqueta: null,
     notas,
@@ -274,8 +280,8 @@ const changes = {
     if (key(selectedServiceResult.data.nombre) !== key(serviceResult.data.nombre)) {
       return Response.json({ error: "La cuenta de stock pertenece a otro servicio." }, { status: 400 });
     }
-    if (effectiveDeliveryType(serviceResult.data) === "gemini" && !correo_cliente) {
-      return Response.json({ error: "Para Gemini escribe el correo Gmail del cliente." }, { status: 400 });
+    if ((effectiveDeliveryType(serviceResult.data) === "gemini" || (isYoutubeService(serviceResult.data) && validation.item.grupo)) && !correo_cliente) {
+      return Response.json({ error: "Escribe el correo Gmail del cliente para el grupo familiar." }, { status: 400 });
     }
 
   

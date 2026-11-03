@@ -117,7 +117,8 @@ function normalizeText(value) {
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
-    .trim();
+    .trim()
+    .replace(/\s+/g, " ");
 }
 
 function durationText(tipo, cantidad) {
@@ -155,6 +156,14 @@ function effectiveDeliveryType(service) {
   return service?.tipo_entrega || "estandar";
 }
 
+function isYoutubeService(service) {
+  return normalizeText(service?.nombre || "").includes("youtube");
+}
+
+function isYoutubeFamilyInventory(item, service) {
+  return isYoutubeService(service) && Boolean(String(item?.grupo || "").trim());
+}
+
 function isCapcutService(service) {
   const name = normalizeText(service?.nombre || "");
   return name.includes("capcut");
@@ -162,6 +171,44 @@ function isCapcutService(service) {
 
 function withPurchaseThanks(message) {
   return `${String(message || "").trim()}\n\nGracias por tu compra y confianza 😁`;
+}
+
+// PIN 1 fijo; los demás combinan ceros con el número del perfil.
+// Cada perfil obtiene un PIN de cuatro dígitos, sin repetir dentro de la cuenta.
+function generateInventoryProfilePins(total) {
+  const cantidad = Math.max(1, Math.min(99, Number(total) || 1));
+  const pins = { "1": "1111" };
+  const used = new Set(["1111"]);
+  for (let perfil = 2; perfil <= cantidad; perfil++) {
+    const digit = String(perfil);
+    const options = digit.length === 1
+      ? [
+          `0${digit}${digit}0`, `${digit}00${digit}`, `${digit}0${digit}0`,
+          `0${digit}0${digit}`, `${digit}000`, `00${digit}0`, `000${digit}`,
+          `${digit}${digit}00`, `00${digit}${digit}`
+        ]
+      : [digit.padStart(4, "0"), digit.padEnd(4, "0"), `0${digit}0`];
+    const available = options.filter(pin => pin.length === 4 && !used.has(pin));
+    const pool = available.length ? available : [String(perfil).padStart(4, "0")];
+    const pin = pool[Math.floor(Math.random() * pool.length)];
+    pins[String(perfil)] = pin;
+    used.add(pin);
+  }
+  return pins;
+}
+
+function inventoryGroupMessage(form, service, provider) {
+  const nombre = String(service?.nombre || "Cuenta").trim();
+  const tiempo = durationText(form.duracion_tipo || service?.duracion_tipo || "meses", form.duracion_cantidad || service?.duracion_cantidad || 1);
+  const mes = new Intl.DateTimeFormat("es-CO", {month: "long"}).format(new Date());
+  const encabezado = `${nombre} ${tiempo} (${mes}) (${provider?.iniciales || "Sin proveedor"})`;
+  if (isYoutubeService(service) && form.grupo) {
+    return `${encabezado}\n\nGrupo familiar: ${form.grupo}\nCupos: ${Number(form.cupos_total) || 1}`;
+  }
+  const num = Math.max(1, Number(form.cupos_total) || 1);
+  const pins = Array.from({ length: num }, (_, index) => form.perfiles_pins?.[String(index + 1)] || "");
+  const hasPins = pins.some(pin => String(pin).trim());
+  return `${encabezado}\n\nCorreo: ${form.correo || form.grupo || ""}\nContraseña: ${form.clave || ""}\nPerfil:${hasPins ? `\n${pins.map((pin, i) => `Pin ${pin || "(sin PIN)"}`).join("\n")}` : ""}`;
 }
 
 function inventoryDurationText(item) {
@@ -370,6 +417,7 @@ const [profitEditValue, setProfitEditValue] = useState("");
   const [inventoryRenewalDrafts, setInventoryRenewalDrafts] = useState({});
   const [inventoryRenewMenuId, setInventoryRenewMenuId] = useState("");
   const [promoForm, setPromoForm] = useState({ titulo: "", descripcion: "", precio: "", fecha_inicio: todayISO(), fecha_fin: todayISO(), activo: true });
+  const [editingPromotionId, setEditingPromotionId] = useState("");
   const [promotionTab, setPromotionTab] = useState("promociones");
   const [providerForm, setProviderForm] = useState({ iniciales: "" });
   const [inventoryTab, setInventoryTab] = useState("proveedores");
@@ -378,10 +426,12 @@ const [profitEditValue, setProfitEditValue] = useState("");
   const [deliveryServiceQuery, setDeliveryServiceQuery] = useState("");
   const [showDeliveryServiceMatches, setShowDeliveryServiceMatches] = useState(false);
   const [deliveryClientQuery, setDeliveryClientQuery] = useState("");
+  const [generatedInventoryGroupMessage, setGeneratedInventoryGroupMessage] = useState("");
   const [inventoryForm, setInventoryForm] = useState({ servicio_id: "", proveedor_id: "", correo: "", clave: "", pin: "", perfiles_pins: {}, grupo: "", cupos_total: "", duracion_tipo: "", duracion_cantidad: "", notas: "", fecha_carga: todayISO() });
   const [deliveryForm, setDeliveryForm] = useState({ servicio_id: "", cliente_id: "", inventario_id: "", cupo_numero: "", correo_cliente: "", fecha_inicio: todayISO() });
   const [orderSource, setOrderSource] = useState("external");
-  const [externalOrderForm, setExternalOrderForm] = useState({ proveedor_id: "", correo: "", clave: "", perfil: 1, pin: "" });
+  const [youtubeExternalMode, setYoutubeExternalMode] = useState("grupo");
+  const [externalOrderForm, setExternalOrderForm] = useState({ proveedor_id: "", correo: "", clave: "", perfil: 1, pin: "", grupo: "", correo_cliente: "" });
   const [generatedDelivery, setGeneratedDelivery] = useState(null);
   const [renewalDelivery, setRenewalDelivery] = useState(null);
   const [generatedGuarantees, setGeneratedGuarantees] = useState([]);
@@ -878,8 +928,10 @@ const [profitEditValue, setProfitEditValue] = useState("");
     window.setTimeout(() => document.getElementById(`bulk-delete-${kind}`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 60);
   }
 
-  async function bulkDelete(kind, endpoint, label) {
-    const ids = selectedDeleteIds(kind);
+  async function bulkDelete(kind, endpoint, label, visibleIds) {
+    // Proteger registros fuera del filtro activo: nunca borrar selección oculta.
+    const visibleSet = new Set(visibleIds);
+    const ids = selectedDeleteIds(kind).filter((id) => visibleSet.has(id));
     if (!ids.length) return;
     if (!window.confirm(`¿Estas seguro en borrar ${ids.length} elemento(s) seleccionados?`)) return;
     setWorking(true);
@@ -906,7 +958,8 @@ const [profitEditValue, setProfitEditValue] = useState("");
   }
 
   function bulkDeleteBar(kind, visibleIds, endpoint, label) {
-    const selected = selectedDeleteIds(kind);
+    const visibleSet = new Set(visibleIds);
+    const selected = selectedDeleteIds(kind).filter((id) => visibleSet.has(id));
 
     if (!deleteMode[kind]) return null;
 
@@ -920,7 +973,7 @@ const [profitEditValue, setProfitEditValue] = useState("");
         {selected.length > 0 && (
           <>
             <span>{selected.length} seleccionado(s)</span>
-            <button type="button" className="miniButton dangerMini" disabled={working} onClick={() => bulkDelete(kind, endpoint, label)}>Borrar seleccionados</button>
+            <button type="button" className="miniButton dangerMini" disabled={working} onClick={() => bulkDelete(kind, endpoint, label, visibleIds)}>Borrar seleccionados</button>
           </>
         )}
         <button type="button" className="miniButton" onClick={() => clearDeleteSelection(kind)}>Cancelar selección</button>
@@ -947,8 +1000,8 @@ const [profitEditValue, setProfitEditValue] = useState("");
     setInventoryForm((prev) => ({
       ...prev,
       servicio_id: service.id,
-      duracion_tipo: type === "gemini" ? "meses" : "dias",
-      duracion_cantidad: type === "gemini" ? 1 : 30,
+      duracion_tipo: service.duracion_tipo || (type === "gemini" ? "meses" : "dias"),
+      duracion_cantidad: Number(service.duracion_cantidad || (type === "gemini" ? 1 : 30)),
       cupos_total: prev.cupos_total || 1,
       correo: "", clave: "", pin: "", perfiles_pins: {}, grupo: ""
     }));
@@ -1002,8 +1055,16 @@ const [profitEditValue, setProfitEditValue] = useState("");
     if (client) setDeliveryClientQuery(client.nombre || client.username || "");
   }
 
+  const duplicateClientByName = (data.clientes || []).find(
+    (cliente) => normalizeText(cliente.nombre) === normalizeText(clientForm.nombre) && normalizeText(clientForm.nombre)
+  );
+
   async function createClient(e) {
     e.preventDefault();
+    if (duplicateClientByName) {
+      setError(`Ya existe un cliente con ese nombre: ${duplicateClientByName.nombre}. Busca al cliente existente antes de crear otro.`);
+      return;
+    }
     await runAction(async () => {
       await api("/api/admin/clientes", { method: "POST", body: JSON.stringify(clientForm) });
       await refresh(token);
@@ -1080,12 +1141,37 @@ const [profitEditValue, setProfitEditValue] = useState("");
     );
   }
 
+  function clearPromotionEdit() {
+    setEditingPromotionId("");
+    setPromoForm({ titulo: "", descripcion: "", precio: "", fecha_inicio: todayISO(), fecha_fin: todayISO(), activo: true });
+  }
+
+  function beginPromotionEdit(promo) {
+    setEditingPromotionId(String(promo.id));
+    setPromoForm({
+      titulo: promo.titulo || "",
+      descripcion: promo.descripcion || "",
+      precio: promo.precio || "",
+      fecha_inicio: promo.fecha_inicio || todayISO(),
+      fecha_fin: promo.fecha_fin || todayISO(),
+      activo: promo.activo !== false
+    });
+    document.getElementById("promocion-editor")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
   async function createPromotion(e) {
     e.preventDefault();
+    if (promoForm.fecha_fin < promoForm.fecha_inicio) {
+      setError("La fecha final no puede ser anterior a la inicial.");
+      return;
+    }
     await runAction(async () => {
-      await api("/api/admin/promociones", { method: "POST", body: JSON.stringify(promoForm) });
-      setPromoForm({ titulo: "", descripcion: "", precio: "", fecha_inicio: todayISO(), fecha_fin: todayISO(), activo: true });
-    }, "Promoción guardada correctamente.");
+      await api("/api/admin/promociones", {
+        method: editingPromotionId ? "PATCH" : "POST",
+        body: JSON.stringify(editingPromotionId ? { ...promoForm, id: editingPromotionId } : promoForm)
+      });
+      clearPromotionEdit();
+    }, editingPromotionId ? "Promoción actualizada correctamente." : "Promoción guardada correctamente.");
   }
 
   async function togglePromotion(promo) {
@@ -1132,7 +1218,14 @@ const [profitEditValue, setProfitEditValue] = useState("");
   async function createInventoryItem(e) {
     e.preventDefault();
     await runAction(async () => {
-      await api("/api/admin/inventario", { method: "POST", body: JSON.stringify(inventoryForm) });
+      const formSnapshot = { ...inventoryForm, perfiles_pins: { ...inventoryForm.perfiles_pins } };
+      const serviceSnapshot = (data.servicios || []).find(s => s.id === formSnapshot.servicio_id);
+      const providerSnapshot = (data.proveedores || []).find(p => p.id === formSnapshot.proveedor_id);
+      if (isYoutubeService(serviceSnapshot) && !String(formSnapshot.grupo || "").trim()) {
+        throw new Error("Escribe el nombre del grupo familiar de YouTube.");
+      }
+      await api("/api/admin/inventario", { method: "POST", body: JSON.stringify(formSnapshot) });
+      setGeneratedInventoryGroupMessage(inventoryGroupMessage(formSnapshot, serviceSnapshot, providerSnapshot));
       setInventoryForm({ servicio_id: "", proveedor_id: "", correo: "", clave: "", pin: "", perfiles_pins: {}, grupo: "", cupos_total: "", duracion_tipo: "", duracion_cantidad: "", notas: "", fecha_carga: todayISO() });
       setInventoryServiceQuery("");
       setShowInventoryServiceMatches(false);
@@ -1287,8 +1380,8 @@ Disculpa las molestias ${String.fromCodePoint(0x1F64F, 0x1F3FE)}`);
       setError("Esa cuenta ya no tiene cupos disponibles.");
       return;
     }
-    if (effectiveDeliveryType(selectedService) === "gemini" && !String(deliveryForm.correo_cliente || "").trim()) {
-      setError("Para Gemini escribe el correo Gmail que te proporcionó el cliente.");
+    if ((effectiveDeliveryType(selectedService) === "gemini" || isYoutubeFamilyInventory(selectedInventoryItem, selectedService)) && !String(deliveryForm.correo_cliente || "").trim()) {
+      setError("Escribe el correo Gmail que te proporcionó el cliente para el grupo familiar.");
       return;
     }
     setWorking(true);
@@ -1347,7 +1440,7 @@ duracion_cantidad: selectedDeliveryService.duracion_cantidad
       setDeliveryForm((prev) => ({ ...prev, servicio_id: "", cliente_id: "", inventario_id: "", cupo_numero: "", correo_cliente: "", fecha_inicio: todayISO() }));
       setSubForm({ cliente_id: "", servicio_id: "", fecha_inicio: todayISO() });
       setOrderSource("external");
-      setExternalOrderForm({ proveedor_id: "", correo: "", clave: "", perfil: 1, pin: "" });
+      setExternalOrderForm({ proveedor_id: "", correo: "", clave: "", perfil: 1, pin: "", grupo: "", correo_cliente: "" });
       setProfitValue("");
       setClientQuery("");
       setServiceQuery("");
@@ -1566,7 +1659,7 @@ duracion_cantidad: selectedDeliveryService.duracion_cantidad
       setSubForm({ cliente_id: "", servicio_id: "", fecha_inicio: todayISO() });
       setDeliveryForm((prev) => ({ ...prev, servicio_id: "", cliente_id: "", inventario_id: "", cupo_numero: "", correo_cliente: "", fecha_inicio: todayISO() }));
       setOrderSource("external");
-      setExternalOrderForm({ proveedor_id: "", correo: "", clave: "", perfil: 1, pin: "" });
+      setExternalOrderForm({ proveedor_id: "", correo: "", clave: "", perfil: 1, pin: "", grupo: "", correo_cliente: "" });
       setProfitValue("");
       setClientQuery("");
       setServiceQuery("");
@@ -1581,7 +1674,16 @@ duracion_cantidad: selectedDeliveryService.duracion_cantidad
       setError("Selecciona cliente y servicio.");
       return;
     }
-    const correo = String(externalOrderForm.correo || "").trim();
+    const correoIngresado = String(externalOrderForm.correo || "").trim();
+    const esYoutubeExterno = /youtube/i.test(String(selectedService?.nombre || ""));
+    const grupoExterno = String(externalOrderForm.grupo || "").trim();
+    const correoClienteExterno = String(externalOrderForm.correo_cliente || "").trim();
+    const youtubePorGrupo = esYoutubeExterno && youtubeExternalMode === "grupo";
+    const correo = youtubePorGrupo ? grupoExterno : correoIngresado;
+    if (youtubePorGrupo && (!grupoExterno || !correoClienteExterno)) {
+      setError("Escribe el grupo familiar y el correo Gmail del cliente.");
+      return;
+    }
     const perfil = Number(externalOrderForm.perfil || 1);
     if (!correo) {
       setError("Escribe el correo o acceso de la cuenta externa.");
@@ -1604,9 +1706,11 @@ duracion_cantidad: selectedDeliveryService.duracion_cantidad
           fecha_inicio: subForm.fecha_inicio || todayISO(),
           proveedor_id: externalOrderForm.proveedor_id,
           correo,
-          clave: externalOrderForm.clave,
+          clave: youtubePorGrupo ? "" : externalOrderForm.clave,
           perfil,
           pin: externalOrderForm.pin,
+          grupo: youtubePorGrupo ? grupoExterno : "",
+          correo_cliente: youtubePorGrupo ? correoClienteExterno : "",
           ganancia_neta: Number(profitValue || 0),
           fecha_ganancia: subForm.fecha_inicio || todayISO()
         })
@@ -1626,7 +1730,7 @@ duracion_cantidad: selectedDeliveryService.duracion_cantidad
       const generated = {
         text: buildDeliveryMessage(subForMessage, accountForMessage, {
           cupo_numero: perfil,
-          correo_cliente: effectiveDeliveryType(selectedService) === "gemini" ? correo : null,
+          correo_cliente: youtubePorGrupo ? correoClienteExterno : (effectiveDeliveryType(selectedService) === "gemini" ? correo : null),
           fecha_entrega: todayISO()
         }),
         cliente: selectedClient,
@@ -1639,7 +1743,7 @@ duracion_cantidad: selectedDeliveryService.duracion_cantidad
       setGeneratedDelivery(generated);
       setSubForm({ cliente_id: "", servicio_id: "", fecha_inicio: todayISO() });
       setDeliveryForm({ servicio_id: "", cliente_id: "", inventario_id: "", cupo_numero: "", correo_cliente: "", fecha_inicio: todayISO() });
-      setExternalOrderForm({ proveedor_id: "", correo: "", clave: "", perfil: 1, pin: "" });
+      setExternalOrderForm({ proveedor_id: "", correo: "", clave: "", perfil: 1, pin: "", grupo: "", correo_cliente: "" });
       setProfitValue("");
       setOrderSource("external");
       setClientQuery("");
@@ -1960,7 +2064,7 @@ if (cambiarCuenta && (!nuevoInventarioId || !nuevoCupo)) {
       fecha_inicio: subForm.fecha_inicio || todayISO()
     }));
     setOrderSource(hasStock ? "stock" : "external");
-    setExternalOrderForm({ proveedor_id: "", correo: "", clave: "", perfil: 1, pin: "" });
+    setExternalOrderForm({ proveedor_id: "", correo: "", clave: "", perfil: 1, pin: "", grupo: "", correo_cliente: "" });
     setServiceQuery(
   `${serviceLabel(service)} - ${durationText(serviceDuration(service).tipo, serviceDuration(service).cantidad)}`
 );
@@ -1981,12 +2085,12 @@ if (cambiarCuenta && (!nuevoInventarioId || !nuevoCupo)) {
       setSubForm((prev) => ({ ...prev, servicio_id: exact.id }));
       setDeliveryForm((prev) => ({ ...prev, servicio_id: exact.id, inventario_id: "", cupo_numero: "", correo_cliente: "" }));
       setOrderSource(hasStock ? "stock" : "external");
-      setExternalOrderForm({ proveedor_id: "", correo: "", clave: "", perfil: 1, pin: "" });
+      setExternalOrderForm({ proveedor_id: "", correo: "", clave: "", perfil: 1, pin: "", grupo: "", correo_cliente: "" });
     } else {
       if (subForm.servicio_id) setSubForm((prev) => ({ ...prev, servicio_id: "" }));
       setDeliveryForm((prev) => ({ ...prev, servicio_id: "", inventario_id: "", cupo_numero: "", correo_cliente: "" }));
       setOrderSource("external");
-      setExternalOrderForm({ proveedor_id: "", correo: "", clave: "", perfil: 1, pin: "" });
+      setExternalOrderForm({ proveedor_id: "", correo: "", clave: "", perfil: 1, pin: "", grupo: "", correo_cliente: "" });
     }
     setGeneratedDelivery(null);
   }
@@ -2010,7 +2114,11 @@ if (cambiarCuenta && (!nuevoInventarioId || !nuevoCupo)) {
         method: "PATCH",
         body: JSON.stringify({ id: cliente.id, nombre: cliente.nombre, username: cliente.username, telefono: cliente.telefono, password })
       });
-      const text = `🎉 ¡Hola, ${cliente.nombre}! Bienvenido a JUAN CUENTAS 💙\n\n🔐 Tu acceso al panel de clientes:\n👤 Usuario: ${String(cliente.username || "").trim().replace(/^@+/, "")}\n🔑 Contraseña: ${password}\n🌐 Ingresa aquí: https://juan-cuentas.vercel.app/cliente\n\n✨ Consulta tus servicios y novedades cuando quieras. ¡Gracias por confiar en nosotros! 😁`;
+      const text = `🎉 ¡Hola, ${cliente.nombre}! Bienvenido a JUAN CUENTAS 💙\n\n🔐 Tu acceso al panel de clientes:\n👤 Usuario: ${String(cliente.username || "").trim().replace(/^@+/, "")}\n🔑 Contraseña: ${password}\n🌐 Ingresa aquí: https://juan-cuentas.vercel.app/cliente\n\n✨ Consulta tus servicios y promociones cuando quieras.
+
+🎁🏆 ¡Cada compra te acerca a un premio especial!
+
+💙 ¡Gracias por confiar en JUAN CUENTAS! 😁`;
       setClientAccess((current) => current?.cliente.id === cliente.id ? { ...current, password: "", text } : current);
       setMessage("Acceso actualizado. Copia y entrega el mensaje al cliente.");
     } catch (e) {
@@ -2800,6 +2908,7 @@ Cuenta para renovación
                 <h3>Crear cliente y continuar pedido</h3>
                 <div className="twoCols">
                   <label>Nombre<input value={clientForm.nombre} onChange={(e)=>setClientForm({...clientForm,nombre:e.target.value})}/></label>
+                  {duplicateClientByName && <p role="alert" style={{ color: "#ff9c9c" }}>⚠️ Ya existe «{duplicateClientByName.nombre}». No se permite duplicar nombres.</p>}
                   <label>Usuario<input value={clientForm.username} onChange={(e)=>setClientForm({...clientForm,username:e.target.value})}/></label>
                   <label>Teléfono / usuario WhatsApp<input value={clientForm.telefono} onChange={(e)=>setClientForm({...clientForm,telefono:e.target.value})}/></label>
                   <label>Contraseña<input value={clientForm.password} onChange={(e)=>setClientForm({...clientForm,password:e.target.value})}/></label>
@@ -2888,7 +2997,7 @@ Cuenta para renovación
                 </label>
               )}
 
-              {effectiveDeliveryType(selectedService) === "gemini" && (
+              {(effectiveDeliveryType(selectedService) === "gemini" || isYoutubeFamilyInventory(selectedInventoryItem, selectedService)) && (
                 <label>Correo Gmail del cliente
                   <input type="email" placeholder="Correo que proporciona el cliente" value={deliveryForm.correo_cliente} onChange={(e) => setDeliveryForm((prev) => ({ ...prev, correo_cliente: e.target.value }))} required />
                 </label>
@@ -2899,6 +3008,12 @@ Cuenta para renovación
           {selectedService && orderUsesExternal && (
             <div className="orderCredentialBox externalCredentialsBox">
               <div className="externalBoxTitle"><div><b>🔐 Credenciales externas</b><span>No se agregan al stock. Quedan ligadas únicamente a este pedido y el cliente podrá consultarlas.</span></div></div>
+              {isYoutubeService(selectedService) && (
+                <div className="orderSourceGrid" style={{marginBottom:12}}>
+                  <button type="button" className={`orderSourceCard ${youtubeExternalMode === "grupo" ? "active" : ""}`} onClick={() => setYoutubeExternalMode("grupo")}>👨‍👩‍👧‍👦 Grupo familiar</button>
+                  <button type="button" className={`orderSourceCard ${youtubeExternalMode === "clave" ? "active" : ""}`} onClick={() => setYoutubeExternalMode("clave")}>🔑 Con contraseña</button>
+                </div>
+              )}
               <div className="twoCols">
                 <label>Proveedor (opcional)
                   <select value={externalOrderForm.proveedor_id} onChange={(e) => setExternalOrderForm((prev) => ({ ...prev, proveedor_id: e.target.value }))}>
@@ -2906,16 +3021,33 @@ Cuenta para renovación
                     {(data.proveedores || []).filter((provider) => provider.activo !== false).map((provider) => <option key={provider.id} value={provider.id}>{provider.iniciales}</option>)}
                   </select>
                 </label>
-                <label>{selectedType === "gemini" ? "Correo / grupo" : "Correo / acceso"}
-                  <input placeholder="correo@cuenta.com" value={externalOrderForm.correo} onChange={(e) => setExternalOrderForm((prev) => ({ ...prev, correo: e.target.value }))} required />
-                </label>
+                {!(isYoutubeService(selectedService) && youtubeExternalMode === "grupo") && (
+                  <label>{selectedType === "gemini" ? "Correo / grupo" : "Correo / acceso"}
+                    <input placeholder="correo@cuenta.com" value={externalOrderForm.correo} onChange={(e) => setExternalOrderForm((prev) => ({ ...prev, correo: e.target.value }))} required />
+                  </label>
+                )}
               </div>
+              {isYoutubeService(selectedService) && youtubeExternalMode === "grupo" && (
+                <div className="twoCols" style={{marginTop: 12}}>
+                  <label>Grupo familiar de YouTube
+                    <input placeholder="Ej. Familia 1 / Grupo 2" value={externalOrderForm.grupo || ""} onChange={(e) => setExternalOrderForm((prev) => ({ ...prev, grupo: e.target.value }))} required />
+                  </label>
+                  <label>Correo Gmail del cliente (para la invitación)
+                    <input type="email" placeholder="cliente@gmail.com" value={externalOrderForm.correo_cliente || ""} onChange={(e) => setExternalOrderForm((prev) => ({ ...prev, correo_cliente: e.target.value }))} required />
+                  </label>
+                </div>
+              )}
               <div className="threeCols externalCredentialGrid">
-                <label>Contraseña (opcional)<input placeholder="Si aplica" value={externalOrderForm.clave} onChange={(e) => setExternalOrderForm((prev) => ({ ...prev, clave: e.target.value }))} /></label>
+                {!(isYoutubeService(selectedService) && youtubeExternalMode === "grupo") && (
+                  <label>Contraseña (opcional)<input placeholder="Si aplica" value={externalOrderForm.clave} onChange={(e) => setExternalOrderForm((prev) => ({ ...prev, clave: e.target.value }))} /></label>
+                )}
                 <label>{selectedType === "estandar" || selectedType === "manual" ? "Número de perfil" : "Número de cupo"}
                   <input type="number" onWheel={bloquearScrollNumerico} inputMode="numeric" min="1" max="50" value={externalOrderForm.perfil} onChange={(e) => setExternalOrderForm((prev) => ({ ...prev, perfil: e.target.value }))} required />
                 </label>
-                <label>PIN (opcional)<input inputMode="numeric" placeholder="Si aplica" value={externalOrderForm.pin} onChange={(e) => setExternalOrderForm((prev) => ({ ...prev, pin: e.target.value }))} /></label>
+                {!(isYoutubeService(selectedService) && youtubeExternalMode === "grupo") && (
+                  <label>PIN (opcional)<input inputMode="numeric" placeholder="Si aplica" value={externalOrderForm.pin} onChange={(e) => setExternalOrderForm((prev) => ({ ...prev, pin: e.target.value }))} />
+                  </label>
+                )}
               </div>
             </div>
           )}
@@ -2945,7 +3077,7 @@ Cuenta para renovación
             <div className="moneyInputWrap"><span>$</span><input type="number" onWheel={bloquearScrollNumerico} inputMode="numeric" min="0" step="1" placeholder="Ej. 12000" value={profitValue} onChange={(e) => setProfitValue(e.target.value)} required /></div>
           </label>
 
-          <button className="button primary orderSubmit" disabled={working || profitValue === "" || Number(profitValue) < 0 || !subForm.cliente_id || !subForm.servicio_id || (orderUsesInventory && (!deliveryForm.inventario_id || !deliveryForm.cupo_numero)) || (orderUsesExternal && (!String(externalOrderForm.correo || "").trim() || !Number(externalOrderForm.perfil)))}>
+          <button className="button primary orderSubmit" disabled={working || profitValue === "" || Number(profitValue) < 0 || !subForm.cliente_id || !subForm.servicio_id || (orderUsesInventory && (!deliveryForm.inventario_id || !deliveryForm.cupo_numero)) || (orderUsesExternal && (!(isYoutubeService(selectedService) && youtubeExternalMode === "grupo" ? (String(externalOrderForm.grupo || "").trim() && String(externalOrderForm.correo_cliente || "").trim()) : String(externalOrderForm.correo || "").trim()) || !Number(externalOrderForm.perfil)))}>
             {working ? "Guardando..." : orderUsesInventory ? "Crear pedido y generar entrega" : orderUsesExternal ? "Crear pedido externo y generar entrega" : "Agregar pedido"}
           </button>
 
@@ -3659,6 +3791,8 @@ async function saveProfitEdit(item) {
             <div className="quickClientFormHead"><strong>Nuevo cliente</strong><button type="button" className="miniButton" onClick={() => setShowClientCreateInline(false)}>Cerrar</button></div>
             <div className="quickClientGrid">
               <input placeholder="Nombre" value={clientForm.nombre} onChange={(e) => setClientForm({ ...clientForm, nombre: e.target.value })} required />
+          {duplicateClientByName && <p role="alert" style={{ color: "#ff9c9c", margin: "4px 0" }}>⚠️ Ya existe «{duplicateClientByName.nombre}». No se permite duplicar nombres.</p>}
+              {duplicateClientByName && <p role="alert" style={{ color: "#ff9c9c", margin: "4px 0" }}>⚠️ Ya existe «{duplicateClientByName.nombre}». No se permite duplicar nombres.</p>}
               <input placeholder="Usuario (ej. Alejandra45)" value={clientForm.username} onChange={(e) => setClientForm({ ...clientForm, username: e.target.value })} required />
               <input placeholder="Número o @usuario de WhatsApp" value={clientForm.telefono} onChange={(e) => setClientForm({ ...clientForm, telefono: e.target.value })} />
               <input placeholder="Contraseña inicial" type="password" minLength={6} value={clientForm.password} onChange={(e) => setClientForm({ ...clientForm, password: e.target.value })} required />
@@ -4092,7 +4226,7 @@ async function saveProfitEdit(item) {
   />
 </div>
 
-            {bulkDeleteBar("servicios", data.servicios.map((service) => service.id), "/api/admin/servicios", "servicio")}
+            {bulkDeleteBar("servicios", filteredServices.map((service) => service.id), "/api/admin/servicios", "servicio")}
             <div className="catalogGrid">
               {filteredServices.map((s) => {
                 const duration = serviceDuration(s);
@@ -4155,7 +4289,8 @@ async function saveProfitEdit(item) {
 
         {promotionTab === "promociones" ? (
           <>
-            <form className="card adminForm promoForm" onSubmit={createPromotion}>
+            <form id="promocion-editor" className="card adminForm promoForm" onSubmit={createPromotion}>
+              {editingPromotionId && <div className="promotionEditingNotice">✏️ Editando promoción. Modifica sus datos y guarda los cambios.</div>}
               <div className="twoCols">
                 <label>Título<input placeholder="Ej. Disney + Max combo" value={promoForm.titulo} onChange={(e) => setPromoForm({ ...promoForm, titulo: e.target.value })} required /></label>
                 <label>Precio / llamada (opcional)<input placeholder="Ej. $18.000" value={promoForm.precio} onChange={(e) => setPromoForm({ ...promoForm, precio: e.target.value })} /></label>
@@ -4165,7 +4300,10 @@ async function saveProfitEdit(item) {
                 <label>Desde<input type="date" value={promoForm.fecha_inicio} onChange={(e) => setPromoForm({ ...promoForm, fecha_inicio: e.target.value })} required /></label>
                 <label>Hasta<input type="date" value={promoForm.fecha_fin} onChange={(e) => setPromoForm({ ...promoForm, fecha_fin: e.target.value })} required /></label>
               </div>
-              <button className="button primary" disabled={working}>{working ? "Guardando..." : "Publicar promoción"}</button>
+              <div className="promotionFormActions">
+                <button className="button primary" disabled={working}>{working ? "Guardando..." : editingPromotionId ? "Guardar cambios" : "Publicar promoción"}</button>
+                {editingPromotionId && <button type="button" className="button secondary" disabled={working} onClick={clearPromotionEdit}>Cancelar edición</button>}
+              </div>
             </form>
 
             <section className="promoAdminList">
@@ -4188,6 +4326,7 @@ async function saveProfitEdit(item) {
                       </div>
                       <div className="inlineActions">
                         <span className={promo.activo ? "status ok" : "status suspendedStatus"}>{promo.activo ? "Visible" : "Oculta"}</span>
+                        <button type="button" className="miniButton primaryMini" onClick={() => beginPromotionEdit(promo)}>✏️ Editar</button>
                         <button type="button" className="miniButton" onClick={() => togglePromotion(promo)}>{promo.activo ? "Ocultar" : "Activar"}</button>
                         <button type="button" className="miniButton dangerMini" onClick={() => beginDeleteSelection("promociones", promo.id)}>Borrar</button>
                       </div>
@@ -4423,7 +4562,7 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
   onChange={(e) => setProviderSearch(e.target.value)}
 />
 
-            {bulkDeleteBar("proveedores", (data.proveedores || []).filter((provider) => provider.activo !== false).map((provider) => provider.id), "/api/admin/proveedores", "proveedor")}
+            {bulkDeleteBar("proveedores", (data.proveedores || []).filter((provider) => provider.activo !== false && String(provider.iniciales || "").toLowerCase().includes(providerSearch.toLowerCase())).map((provider) => provider.id), "/api/admin/proveedores", "proveedor")}
             <div className="providerList">
               <div className="providerListHead"><span>{deleteMode["proveedores"] ? "Seleccionar / Iniciales" : "Iniciales"}</span><span>Acción</span></div>
              
@@ -4489,9 +4628,13 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
     : uploadType === "gemini"
     ? "Cupos configurables"
     : "Perfiles configurables"}</span></div>}
-            {selectedUploadService && inventoryDurationControls(inventoryForm, setInventoryForm, uploadType)}
+            {selectedUploadService && !isYoutubeService(selectedUploadService) && inventoryDurationControls(inventoryForm, setInventoryForm, uploadType)}
 
-            {selectedUploadService && uploadType === "gemini" ? (
+            {selectedUploadService && isYoutubeService(selectedUploadService) ? (
+              <label>Nombre del grupo familiar de YouTube
+                <input placeholder="Ej. Familia 1 / Grupo A" value={inventoryForm.grupo} onChange={(e) => setInventoryForm({ ...inventoryForm, grupo: e.target.value, correo: "", clave: "", perfiles_pins: {} })} required />
+              </label>
+            ) : selectedUploadService && uploadType === "gemini" ? (
               <label>Correo del grupo<input placeholder="Correo del grupo" value={inventoryForm.grupo} onChange={(e) => setInventoryForm({ ...inventoryForm, grupo: e.target.value })} required /></label>
             ) : selectedUploadService ? (
               <div className="twoCols">
@@ -4516,9 +4659,17 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
     }
   />
 </label>   
-{uploadType === "estandar" && (
+{uploadType === "estandar" && !isYoutubeService(selectedUploadService) && (
                 <div className="profilePinsBox">
-                  <div className="profilePinsTitle"><strong>PIN por perfil</strong><span>Opcional. Cada perfil puede tener un PIN diferente.</span></div>
+                  <div className="profilePinsTitle"><strong>PIN por perfil</strong><span>Opcional. Perfil 1 siempre será 1111 si generas PIN.</span></div>
+                  <div className="inlineActions" style={{marginBottom:12, flexWrap:"wrap"}}>
+                    <button type="button" className="miniButton primaryMini" onClick={() => setInventoryForm(prev => ({...prev, pin: "", perfiles_pins: generateInventoryProfilePins(prev.cupos_total)}))}>
+                      🎲 Generar PIN automáticamente
+                    </button>
+                    <button type="button" className="miniButton" onClick={() => setInventoryForm(prev => ({...prev, pin: "", perfiles_pins: {}}))}>
+                      Sin PIN
+                    </button>
+                  </div>
                   <div className="profilePinsGrid">
                     {Array.from({ length: uploadProfiles }, (_, index) => index + 1).map((profile) => (
                       <label key={profile}>Perfil {profile}
@@ -4539,6 +4690,16 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
             <label>Fecha de carga<input type="date" value={inventoryForm.fecha_carga} onChange={(e) => setInventoryForm({ ...inventoryForm, fecha_carga: e.target.value })} /></label>
             <label>Nota adicional<textarea placeholder="Opcional: instrucciones internas, observaciones, etc." value={inventoryForm.notas} onChange={(e) => setInventoryForm({ ...inventoryForm, notas: e.target.value })} /></label>
             <button className="button primary" disabled={working || !selectedUploadService}>{working ? "Guardando..." : "Añadir cuenta disponible"}</button>
+            {generatedInventoryGroupMessage && (
+              <div className="generatedDelivery" style={{minWidth:0, maxWidth:"100%"}}>
+                <div className="generatedHeader">
+                  <div><strong>Mensaje para tu grupo de WhatsApp</strong><span>Cuenta guardada. Copia todo en un clic.</span></div>
+                  <button type="button" className="generatedClose" aria-label="Cerrar mensaje" onClick={() => setGeneratedInventoryGroupMessage("")}>×</button>
+                </div>
+                <textarea readOnly rows={11} value={generatedInventoryGroupMessage} style={{width:"100%",boxSizing:"border-box",whiteSpace:"pre-wrap"}} />
+                <div className="inlineActions"><button type="button" className="miniButton primaryMini" onClick={() => copyText(generatedInventoryGroupMessage)}>📋 Copiar mensaje completo</button></div>
+              </div>
+            )}
           </form>
         )}
 
@@ -4821,7 +4982,7 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
               )}
               
 
-              {streamingInventory.length > 0 && bulkDeleteBar("inventario", streamingInventory.map((item) => item.id), "/api/admin/inventario", "cuenta")}
+              {streamingInventory.length > 0 && bulkDeleteBar("inventario", filteredStreamingInventory.map((item) => item.id), "/api/admin/inventario", "cuenta")}
               {filteredStreamingInventory.length === 0 ? <div className="card emptyState">Aún no hay cuentas cargadas.</div> : (
                 <div className="card accountsTableCard"><div className="accountsTableScroll"><table className="accountsTable inventoryTable">
                   <thead><tr>{deleteMode["inventario"] && <th className="selectColumn">✓</th>}<th>Servicio</th><th>Proveedor</th><th>Cuenta / grupo</th><th>Vencimiento cuenta</th><th>Días cuenta</th><th>Cupos</th><th>Estado</th><th>Entregas activas</th><th>Acciones</th></tr></thead>
