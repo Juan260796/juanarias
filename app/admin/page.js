@@ -1628,14 +1628,28 @@ duracion_cantidad: selectedDeliveryService.duracion_cantidad
     }
   }
 
-  async function copyText(text) {
+  function animateCopyButton(event) {
+    const button = event?.currentTarget;
+    if (!button) return;
+    button.classList.remove("jcCopyPressed");
+    void button.offsetWidth;
+    button.classList.add("jcCopyPressed");
+    window.setTimeout(() => button.classList.remove("jcCopyPressed"), 550);
+  }
+
+  function showCopyNotice() {
+    setCopyNotice(false);
+    window.setTimeout(() => setCopyNotice(true), 10);
+  }
+
+  async function copyText(text, event) {
     if (!text) return;
     try {
       await navigator.clipboard.writeText(text);
-      setCopyNotice(false);
-      window.setTimeout(() => setCopyNotice(true), 10);
+      animateCopyButton(event);
+      showCopyNotice();
     } catch {
-      setError("No se pudo copiar automáticamente. Mantén pulsado el texto para copiarlo.");
+      setError("No se pudo copiar automáticamente. Revisa los permisos del portapapeles.");
     }
   }
 
@@ -2515,9 +2529,9 @@ Cuenta para renovación
                 <div className="generatedHeader"><strong>✅ Mensaje de entrega de la renovación</strong></div>
                 <textarea aria-label="Mensaje de entrega de la renovación" readOnly value={renewalDelivery.text} style={{width:"100%", minHeight:210, boxSizing:"border-box", resize:"vertical"}} />
                 <div className="inlineActions" style={{flexWrap:"wrap"}}>
-                  <button type="button" className="miniButton primaryMini" onClick={() => copyText(renewalDelivery.text)}>📋 Copiar mensaje</button>
-                  {renewalDelivery.cliente?.telefono && <button type="button" className="miniButton" onClick={async () => {
-                    await copyText(renewalDelivery.text);
+                  <button type="button" className="miniButton primaryMini" onClick={(event) => copyText(renewalDelivery.text, event)}>📋 Copiar mensaje</button>
+                  {renewalDelivery.cliente?.telefono && <button type="button" className="miniButton" onClick={async (event) => {
+                    await copyText(renewalDelivery.text, event);
                     window.open(whatsappUrl(renewalDelivery.cliente.telefono, ""), "_blank", "noopener,noreferrer");
                   }}>WhatsApp</button>}
                 </div>
@@ -2600,8 +2614,7 @@ Cuenta para renovación
     window.open(wa, "_blank", "noopener,noreferrer");
     try {
       await copia;
-      setCopyNotice(false);
-      window.setTimeout(() => setCopyNotice(true), 10);
+      showCopyNotice();
       // Reportar solo si YA está vencida; nunca al avisar una próxima renovación.
       if (s.days !== null && s.days <= 0 && !s.reporte_vencimiento) {
         await marcarReportada(s.id);
@@ -2950,7 +2963,7 @@ Cuenta para renovación
             <>
               <div className="formSectionTitle"><span>3</span><div><h2>Tipo de entrega</h2><p>Elige de dónde salen las credenciales de este pedido.</p></div></div>
               <div style={{display:"flex",justifyContent:"flex-end",marginBottom:10}}>
-                <button type="button" className="miniButton" disabled={working} onClick={async () => {
+                <button type="button" className="miniButton" disabled={working} onClick={async (event) => {
                   setWorking(true);
                   setError("");
                   try { await refresh(); setMessage("Disponibilidad del stock actualizada."); }
@@ -3088,12 +3101,13 @@ Cuenta para renovación
                 <button type="button" className="generatedClose" aria-label="Cerrar mensaje" onClick={() => setGeneratedDelivery(null)}>×</button>
               </div>
               <textarea readOnly value={generatedDelivery.text} />
-              <div className="inlineActions"><button type="button" className="miniButton primaryMini" onClick={copyDeliveryText}>Copiar texto</button><button
+              <div className="inlineActions"><button type="button" className="miniButton primaryMini" onClick={(event) => copyText(generatedDelivery?.text, event)}>Copiar texto</button><button
   type="button"
   className="waTableButton"
-  onClick={async () => {
-    await navigator.clipboard.writeText(generatedDelivery.text);
+  onClick={async (event) => {
+    const copyPromise = copyText(generatedDelivery.text, event);
     window.open(orderWhatsapp, "_blank");
+    await copyPromise;
   }}
 >
   Enviar por WhatsApp
@@ -3962,7 +3976,7 @@ async function saveProfitEdit(item) {
           </select></div>
         <p className="jcBulkHint">{cfg.help}</p>
         <p className="jcBulkHint"><strong>Orden de columnas:</strong> {cfg.fields.join(" · ")}</p>
-        <div className="jcBulkActions"><button type="button" className="miniButton" onClick={() => navigator.clipboard?.writeText(cfg.fields.join("\t"))}>📋 Copiar encabezados para Excel</button><button type="button" className="miniButton" onClick={() => { const content = '\uFEFF' + cfg.fields.join(';') + '\n'; const url = URL.createObjectURL(new Blob([content], { type: 'text/csv;charset=utf-8' })); const a = document.createElement('a'); a.href=url; a.download=`juan-cuentas-${bulkKind}.csv`; a.click(); URL.revokeObjectURL(url); }}>⬇ Descargar plantilla CSV</button></div>
+        <div className="jcBulkActions"><button type="button" className="miniButton" onClick={(event) => copyText(cfg.fields.join("\t"), event)}>📋 Copiar encabezados para Excel</button><button type="button" className="miniButton" onClick={() => { const content = '\uFEFF' + cfg.fields.join(';') + '\n'; const url = URL.createObjectURL(new Blob([content], { type: 'text/csv;charset=utf-8' })); const a = document.createElement('a'); a.href=url; a.download=`juan-cuentas-${bulkKind}.csv`; a.click(); URL.revokeObjectURL(url); }}>⬇ Descargar plantilla CSV</button></div>
         <label className="jcBulkLabel">Pega aquí tus filas copiadas desde Excel</label>
         <textarea className="jcBulkPaste" value={bulkPaste} onChange={(e) => setBulkPaste(e.target.value)} placeholder={cfg.fields.join("\t")} rows={5} disabled={bulkBusy}/>
         <div className="jcBulkActions"><button type="button" className="miniButton primaryMini" disabled={bulkBusy || !bulkPaste.trim()} onClick={() => ingest(bulkPaste)}>🔎 Revisar filas</button><label className="jcBulkFile">📂 Importar CSV <input type="file" accept=".csv,.tsv,text/csv,text/tab-separated-values" disabled={bulkBusy} onChange={async (e) => { const file=e.target.files?.[0]; if (file) { const contents=await file.text(); ingest(contents, file.name.toLowerCase().endsWith('.tsv') ? '\t' : undefined); } e.target.value=''; }}/></label></div>
@@ -4137,7 +4151,7 @@ async function saveProfitEdit(item) {
                 <div className="jcTemplateVariables">
                   <strong>Variables automáticas (toca para copiar)</strong>
                   <div className="jcTemplateTokens">
-                    {VARIABLES_PLANTILLA.map((variable) => <button type="button" key={variable} className="miniButton" onClick={() => copyText(`{${variable}}`)}>{`{${variable}}`}</button>)}
+                    {VARIABLES_PLANTILLA.map((variable) => <button type="button" key={variable} className="miniButton" onClick={(event) => copyText(`{${variable}}`, event)}>{`{${variable}}`}</button>)}
                   </div>
                   <p className="fieldHint">Las variables se rellenan automáticamente al generar el pedido. {`{fecha_seleccionada}`} usa la fecha de inicio seleccionada en el pedido; por ejemplo, «17 octubre».</p>
                 </div>
@@ -4697,7 +4711,7 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
                   <button type="button" className="generatedClose" aria-label="Cerrar mensaje" onClick={() => setGeneratedInventoryGroupMessage("")}>×</button>
                 </div>
                 <textarea readOnly rows={11} value={generatedInventoryGroupMessage} style={{width:"100%",boxSizing:"border-box",whiteSpace:"pre-wrap"}} />
-                <div className="inlineActions"><button type="button" className="miniButton primaryMini" onClick={() => copyText(generatedInventoryGroupMessage)}>📋 Copiar mensaje completo</button></div>
+                <div className="inlineActions"><button type="button" className="miniButton primaryMini" onClick={(event) => copyText(generatedInventoryGroupMessage, event)}>📋 Copiar mensaje completo</button></div>
               </div>
             )}
           </form>
@@ -4829,7 +4843,7 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
                     <div className="generatedDelivery guaranteeGeneratedMessage" key={guarantee.id}>
                       <div className="generatedHeader"><div><strong>{guarantee.cliente?.nombre || "Cliente"}</strong><span>Mensaje de garantía · fecha original conservada</span></div></div>
                       <textarea readOnly value={guarantee.text} />
-                      <div className="inlineActions"><button type="button" className="miniButton primaryMini" onClick={() => copyText(guarantee.text)}>Copiar texto</button>{wa && <a className="waTableButton" href={wa} target="_blank" rel="noreferrer">Enviar por WhatsApp</a>}</div>
+                      <div className="inlineActions"><button type="button" className="miniButton primaryMini" onClick={(event) => copyText(guarantee.text, event)}>Copiar texto</button>{wa && <a className="waTableButton" href={wa} target="_blank" rel="noreferrer">Enviar por WhatsApp</a>}</div>
                     </div>
                   );
                 })}
@@ -5106,7 +5120,7 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
               <>
                 <div style={{ background: "#06182a", border: "1px solid #315b83", borderRadius: 10, padding: 14, whiteSpace: "pre-wrap", lineHeight: 1.6, overflowWrap: "anywhere" }}>{clientAccess.text}</div>
                 <div className="inlineActions" style={{ marginTop: 14 }}>
-                  <button type="button" className="miniButton primaryMini" onClick={() => copyText(clientAccess.text)}>📋 Copiar mensaje</button>
+                  <button type="button" className="miniButton primaryMini" onClick={(event) => copyText(clientAccess.text, event)}>📋 Copiar mensaje</button>
                   <button type="button" className="miniButton" onClick={() => setClientAccess((old) => ({ ...old, text: "", password: "" }))}>Crear otro acceso</button>
                 </div>
                 <p style={{ color: "#9ebbd2", fontSize: 12 }}>Comparte las credenciales únicamente con el cliente, por un canal privado.</p>
@@ -5115,7 +5129,7 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
           </section>
         </div>
       )}
-      {copyNotice && <div className="copyToast" role="status" aria-live="polite">Texto copiado <span>✓</span></div>}
+      {copyNotice && <div className="copyToast" role="status" aria-live="polite">¡Copiado al portapapeles! <span>✓</span></div>}
       {(error || message) && (
         <div key={`${error ? "error" : "ok"}-${error || message}`} className={`jcActionToast ${error ? "jcActionToastError" : "jcActionToastSuccess"}`} role={error ? "alert" : "status"} aria-live={error ? "assertive" : "polite"}>
           <span className="jcActionToastEmoji" aria-hidden="true">{iconoAviso(error || message, Boolean(error))}</span>

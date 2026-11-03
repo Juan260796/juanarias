@@ -108,6 +108,7 @@ export default function Cliente() {
   const [asignaciones, setAsignaciones] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [copyNotice, setCopyNotice] = useState(false);
 
   useEffect(() => {
     let mounted = true;
@@ -182,8 +183,28 @@ export default function Cliente() {
   const loyaltyRemaining = Math.max(0, 10 - loyaltyCycleCount);
   const loyaltyProgress = Math.min(100, (loyaltyCycleCount / 10) * 100);
 
-  async function copyValue(value) {
-    try { await navigator.clipboard.writeText(value); } catch {}
+  useEffect(() => {
+    if (!copyNotice) return undefined;
+    const timer = window.setTimeout(() => setCopyNotice(false), 1800);
+    return () => window.clearTimeout(timer);
+  }, [copyNotice]);
+
+  async function copyValue(value, event) {
+    if (!value) return;
+    try {
+      await navigator.clipboard.writeText(value);
+      const button = event?.currentTarget;
+      if (button) {
+        button.classList.remove("jcCopyPressed");
+        void button.offsetWidth;
+        button.classList.add("jcCopyPressed");
+        window.setTimeout(() => button.classList.remove("jcCopyPressed"), 550);
+      }
+      setCopyNotice(false);
+      window.setTimeout(() => setCopyNotice(true), 10);
+    } catch {
+      setError("No se pudo copiar. Revisa los permisos del portapapeles.");
+    }
   }
 
   async function logout() {
@@ -203,24 +224,24 @@ export default function Cliente() {
         <div className="accessRows">
           {type === "gemini" ? (
             <>
-              <div><span>CORREO DEL CLIENTE</span><strong>{assignment.correo_cliente || "—"}</strong>{assignment.correo_cliente && <button type="button" onClick={() => copyValue(assignment.correo_cliente)}>Copiar</button>}</div>
-              <div><span>GRUPO</span><strong>{account.grupo || account.correo || "—"}</strong><button type="button" onClick={() => copyValue(account.grupo || account.correo || "")}>Copiar</button></div>
+              <div><span>CORREO DEL CLIENTE</span><strong>{assignment.correo_cliente || "—"}</strong>{assignment.correo_cliente && <button type="button" onClick={(event) => copyValue(assignment.correo_cliente, event)}>Copiar</button>}</div>
+              <div><span>GRUPO</span><strong>{account.grupo || account.correo || "—"}</strong><button type="button" onClick={(event) => copyValue(account.grupo || account.correo || "", event)}>Copiar</button></div>
               <div><span>CUPO</span><strong>{assignment.cupo_numero}</strong></div>
             </>
           ) : type === "chatgpt" ? (
             <>
-              <div><span>CORREO</span><strong>{account.correo}</strong><button type="button" onClick={() => copyValue(account.correo)}>Copiar</button></div>
+              <div><span>CORREO</span><strong>{account.correo}</strong><button type="button" onClick={(event) => copyValue(account.correo, event)}>Copiar</button></div>
               <div><span>CUPO</span><strong>{assignment.cupo_numero}</strong></div>
               <div><span>INGRESO</span><strong>Solicitar código</strong></div>
             </>
           ) : (
             <>
-              <div><span>CORREO / ACCESO</span><strong>{account.correo}</strong><button type="button" onClick={() => copyValue(account.correo)}>Copiar</button></div>
-              {account.clave && <div><span>CLAVE</span><strong>{account.clave}</strong><button type="button" onClick={() => copyValue(account.clave)}>Copiar</button></div>}
+              <div><span>CORREO / ACCESO</span><strong>{account.correo}</strong><button type="button" onClick={(event) => copyValue(account.correo, event)}>Copiar</button></div>
+              {account.clave && <div><span>CLAVE</span><strong>{account.clave}</strong><button type="button" onClick={(event) => copyValue(account.clave, event)}>Copiar</button></div>}
               <div><span>PERFIL</span><strong>{assignment.cupo_numero}</strong></div>
               {(() => {
                 const profilePin = account.perfiles_pins?.[String(assignment.cupo_numero)] || account.pin || "";
-                return profilePin ? <div><span>PIN</span><strong>{profilePin}</strong><button type="button" onClick={() => copyValue(profilePin)}>Copiar</button></div> : null;
+                return profilePin ? <div><span>PIN</span><strong>{profilePin}</strong><button type="button" onClick={(event) => copyValue(profilePin, event)}>Copiar</button></div> : null;
               })()}
             </>
           )}
@@ -260,6 +281,7 @@ export default function Cliente() {
 
   return (
     <main className="dashboard">
+      {copyNotice && <div className="copyToast" role="status" aria-live="polite">¡Copiado al portapapeles! <span>✓</span></div>}
       <header className="topbar"><div className="clientBrand"><img className="brandLogo clientHeaderLogo" src="/logo.jpg" alt="Juan Cuentas" /><div><strong>JUAN CUENTAS</strong><span>Panel del cliente</span></div></div><button className="linkButton" onClick={logout}>Cerrar sesión</button></header>
       <section className="content">
         <div className="welcome"><p>Hola 👋</p><h1>{cliente?.nombre || "Cliente"}</h1><div className="muted">Consulta tus servicios y promociones 💙 ¡Cada compra te acerca a un premio especial! 🎁🏆</div></div>
