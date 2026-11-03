@@ -332,6 +332,7 @@ export default function Admin() {
 const [streamFilter, setStreamFilter] = useState("todos");
 const [providerSearch, setProviderSearch] = useState("");
   const [clientListQuery, setClientListQuery] = useState("");
+  const [clientAccess, setClientAccess] = useState(null);
   const [activeSearch, setActiveSearch] = useState("");
 const [expiredSearch, setExpiredSearch] = useState("");
 const [activeFilterField, setActiveFilterField] = useState("todos");
@@ -1988,6 +1989,35 @@ if (cambiarCuenta && (!nuevoInventarioId || !nuevoCupo)) {
       setExternalOrderForm({ proveedor_id: "", correo: "", clave: "", perfil: 1, pin: "" });
     }
     setGeneratedDelivery(null);
+  }
+
+  function openClientAccess(cliente) {
+    setClientAccess({ cliente: { id: cliente.id, nombre: cliente.nombre || "", username: cliente.username || "", telefono: cliente.telefono || "" }, password: "", text: "" });
+    setError("");
+  }
+
+  async function generateClientAccess() {
+    if (!clientAccess || working) return;
+    const { cliente, password } = clientAccess;
+    if (password.length < 6) {
+      setError("Escribe una contraseña nueva de mínimo 6 caracteres para entregar un acceso válido.");
+      return;
+    }
+    setWorking(true);
+    setError("");
+    try {
+      await api("/api/admin/clientes", {
+        method: "PATCH",
+        body: JSON.stringify({ id: cliente.id, nombre: cliente.nombre, username: cliente.username, telefono: cliente.telefono, password })
+      });
+      const text = `🎉 ¡Hola, ${cliente.nombre}! Bienvenido a JUAN CUENTAS 💙\n\n🔐 Tu acceso al panel de clientes:\n👤 Usuario: ${String(cliente.username || "").trim().replace(/^@+/, "")}\n🔑 Contraseña: ${password}\n🌐 Ingresa aquí: https://juan-cuentas.vercel.app/cliente\n\n✨ Consulta tus servicios y novedades cuando quieras. ¡Gracias por confiar en nosotros! 😁`;
+      setClientAccess((current) => current?.cliente.id === cliente.id ? { ...current, password: "", text } : current);
+      setMessage("Acceso actualizado. Copia y entrega el mensaje al cliente.");
+    } catch (e) {
+      setError(e.message || "No se pudo actualizar el acceso del cliente.");
+    } finally {
+      setWorking(false);
+    }
   }
 
   function beginClientEdit(cliente) {
@@ -3686,6 +3716,7 @@ async function saveProfitEdit(item) {
                       <td><span className="orderCountBadge">{clientOrderCounts[cliente.id] || 0}</span></td>
                       <td>
                         <div className="clientEditActions compact">
+                          <button type="button" className="miniButton primaryMini" onClick={() => openClientAccess(cliente)}>🔐 Entregar acceso</button>
                           <button type="button" className="miniButton" onClick={() => beginClientEdit(cliente)}>Editar</button>
                           <button type="button" className="miniButton dangerMini" disabled={working} onClick={() => beginDeleteSelection("clientes", cliente.id)}>Borrar</button>
                         </div>
@@ -4894,6 +4925,35 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
           margin-top: 4px; border-radius: 10px; font-size: 14px;
         }
       `}</style>
+      {clientAccess && (
+        <div role="presentation" style={{ position: "fixed", inset: 0, background: "rgba(0, 8, 20, .82)", zIndex: 1200, display: "grid", placeItems: "center", padding: 16 }} onClick={() => setClientAccess(null)}>
+          <section role="dialog" aria-modal="true" aria-label="Entregar acceso al cliente" className="card" onClick={(e) => e.stopPropagation()} style={{ width: "100%", maxWidth: 510, maxHeight: "90vh", overflowY: "auto", padding: 22, border: "1px solid #28618b", borderRadius: 16, background: "#0b2037", color: "#edf7ff" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+              <h2 style={{ margin: 0, fontSize: 20 }}>🔐 Entregar acceso</h2>
+              <button type="button" className="miniButton" onClick={() => setClientAccess(null)}>Cerrar ✕</button>
+            </div>
+            <p style={{ color: "#a9c9e8", margin: "10px 0 18px" }}>Cliente: <strong>{clientAccess.cliente.nombre}</strong> · @{clientAccess.cliente.username}</p>
+            {!clientAccess.text ? (
+              <>
+                <label style={{ display: "block", marginBottom: 12 }}>Nueva contraseña del cliente
+                  <input type="text" autoComplete="off" spellCheck={false} minLength={6} value={clientAccess.password} onChange={(e) => setClientAccess((old) => ({ ...old, password: e.target.value }))} placeholder="Mínimo 6 caracteres" style={{ width: "100%", marginTop: 7, padding: 12, color: "#fff", background: "#06182a", border: "1px solid #315b83", borderRadius: 9, boxSizing: "border-box" }} />
+                </label>
+                <p style={{ color: "#9ebbd2", fontSize: 12 }}>Por seguridad, Supabase no permite consultar la contraseña anterior. Esta opción establece una nueva contraseña y genera el mensaje con el acceso correcto.</p>
+                <button type="button" className="miniButton primaryMini" disabled={working || clientAccess.password.length < 6} onClick={generateClientAccess}>{working ? "Guardando..." : "Guardar contraseña y generar mensaje"}</button>
+              </>
+            ) : (
+              <>
+                <div style={{ background: "#06182a", border: "1px solid #315b83", borderRadius: 10, padding: 14, whiteSpace: "pre-wrap", lineHeight: 1.6, overflowWrap: "anywhere" }}>{clientAccess.text}</div>
+                <div className="inlineActions" style={{ marginTop: 14 }}>
+                  <button type="button" className="miniButton primaryMini" onClick={() => copyText(clientAccess.text)}>📋 Copiar mensaje</button>
+                  <button type="button" className="miniButton" onClick={() => setClientAccess((old) => ({ ...old, text: "", password: "" }))}>Crear otro acceso</button>
+                </div>
+                <p style={{ color: "#9ebbd2", fontSize: 12 }}>Comparte las credenciales únicamente con el cliente, por un canal privado.</p>
+              </>
+            )}
+          </section>
+        </div>
+      )}
       {copyNotice && <div className="copyToast" role="status" aria-live="polite">Texto copiado <span>✓</span></div>}
       {(error || message) && (
         <div key={`${error ? "error" : "ok"}-${error || message}`} className={`jcActionToast ${error ? "jcActionToastError" : "jcActionToastSuccess"}`} role={error ? "alert" : "status"} aria-live={error ? "assertive" : "polite"}>

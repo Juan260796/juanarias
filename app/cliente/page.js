@@ -260,7 +260,7 @@ export default function Cliente() {
 
   return (
     <main className="dashboard">
-      <header className="topbar"><div className="clientBrand"><img className="brandLogo clientHeaderLogo" src="/logo.jpg" alt="Juan Cuentas" /><div><strong>JUAN CUENTAS</strong><span>Panel del cliente</span></div></div><button className="linkButton" onClick={logout}>Salir</button></header>
+      <header className="topbar"><div className="clientBrand"><img className="brandLogo clientHeaderLogo" src="/logo.jpg" alt="Juan Cuentas" /><div><strong>JUAN CUENTAS</strong><span>Panel del cliente</span></div></div><button className="linkButton" onClick={logout}>Cerrar sesión</button></header>
       <section className="content">
         <div className="welcome"><p>Hola 👋</p><h1>{cliente?.nombre || "Cliente"}</h1><div className="muted">Consulta tus servicios, credenciales, promociones y avance de fidelidad.</div></div>
 
@@ -346,7 +346,7 @@ export default function Cliente() {
             );
           })}
         </div>
-        <a className="whatsapp clientSupportFixed" href="https://wa.me/573137279240" target="_blank" rel="noreferrer" aria-label="Soporte por WhatsApp">💬 <span>Soporte por WhatsApp</span></a>
+        <a className="whatsapp clientSupportFixed" style={{ top: "auto", bottom: "max(18px, env(safe-area-inset-bottom))", right: 18 }} href="https://wa.me/573137279240" target="_blank" rel="noreferrer" aria-label="Soporte por WhatsApp">💬 <span>Soporte por WhatsApp</span></a>
       </section>
     </main>
   );
