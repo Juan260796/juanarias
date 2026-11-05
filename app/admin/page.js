@@ -308,6 +308,15 @@ function fechaCortaMensaje(value) {
   return `${fecha.getUTCDate()} ${mes}`;
 }
 
+// La fecha final es inclusiva: el día siguiente la promoción queda oculta.
+function promotionExpired(promo) {
+  return Boolean(promo?.fecha_fin) && String(promo.fecha_fin).slice(0, 10) < todayISO();
+}
+
+function promotionVisibleInAdmin(promo) {
+  return promo?.activo !== false && !promotionExpired(promo);
+}
+
 function promotionIsToday(promo) {
   const today = todayISO();
   return promo?.activo !== false && String(promo?.fecha_inicio || "") <= today && String(promo?.fecha_fin || "") >= today;
@@ -522,6 +531,9 @@ const [profitEditValue, setProfitEditValue] = useState("");
 }
 
   const refresh = useCallback(async (accessToken = token) => {
+    // Persistir como ocultas las promociones cuya fecha final ya pasó.
+    // Solo afecta promociones; no cambia pedidos, clientes ni ganancias.
+    await api("/api/admin/promociones/expirar", {}, accessToken);
     const result = await api(`/api/admin/data?today=${todayISO()}`, {}, accessToken);
     setData(result);
     try {
@@ -532,6 +544,21 @@ const [profitEditValue, setProfitEditValue] = useState("");
       console.warn("No se pudieron consultar los avisos gestionados:", noticeError);
     }
   }, [api, token]);
+
+  // Si el administrador deja el panel abierto durante la noche, revisar
+  // las promociones al cambiar de día sin exigir Ctrl + F5.
+  useEffect(() => {
+    if (!token) return undefined;
+    let lastCheckedDay = todayISO();
+    const timer = window.setInterval(() => {
+      const nextDay = todayISO();
+      if (nextDay !== lastCheckedDay) {
+        lastCheckedDay = nextDay;
+        refresh().catch((err) => setError(err.message || "No se pudieron actualizar las promociones."));
+      }
+    }, 60000);
+    return () => window.clearInterval(timer);
+  }, [token, refresh]);
 
   useEffect(() => {
     const syncViewFromUrl = () => {
@@ -1214,19 +1241,25 @@ const [profitEditValue, setProfitEditValue] = useState("");
     await runAction(async () => {
       await api("/api/admin/promociones", {
         method: editingPromotionId ? "PATCH" : "POST",
-        body: JSON.stringify(editingPromotionId ? { ...promoForm, id: editingPromotionId } : promoForm)
+        body: JSON.stringify(editingPromotionId
+          ? { ...promoForm, activo: promotionExpired(promoForm) ? false : promoForm.activo, id: editingPromotionId }
+          : { ...promoForm, activo: !promotionExpired(promoForm) })
       });
       clearPromotionEdit();
     }, editingPromotionId ? "Promoción actualizada correctamente." : "Promoción guardada correctamente.");
   }
 
   async function togglePromotion(promo) {
+    if (!promotionVisibleInAdmin(promo) && promotionExpired(promo)) {
+      setError("Esta promoción ya venció. Edita sus fechas antes de activarla nuevamente.");
+      return;
+    }
     await runAction(
       () => api("/api/admin/promociones", {
         method: "PATCH",
-        body: JSON.stringify({ ...promo, activo: !promo.activo })
+        body: JSON.stringify({ ...promo, activo: !promotionVisibleInAdmin(promo) })
       }),
-      promo.activo ? "Promoción oculta." : "Promoción activada."
+      promotionVisibleInAdmin(promo) ? "Promoción oculta." : "Promoción activada."
     );
   }
 
@@ -4559,9 +4592,9 @@ async function saveProfitEdit(item) {
                         {promo.precio && <b>{promo.precio}</b>}
                       </div>
                       <div className="inlineActions">
-                        <span className={promo.activo ? "status ok" : "status suspendedStatus"}>{promo.activo ? "Visible" : "Oculta"}</span>
+                        <span className={promotionVisibleInAdmin(promo) ? "status ok" : "status suspendedStatus"}>{promotionVisibleInAdmin(promo) ? "Visible" : "Oculta"}</span>
                         <button type="button" className="miniButton primaryMini" onClick={() => beginPromotionEdit(promo)}>✏️ Editar</button>
-                        <button type="button" className="miniButton" onClick={() => togglePromotion(promo)}>{promo.activo ? "Ocultar" : "Activar"}</button>
+                        <button type="button" className="miniButton" disabled={promotionExpired(promo)} title={promotionExpired(promo) ? "Venció: edita las fechas para volver a activarla" : ""} onClick={() => togglePromotion(promo)}>{promotionExpired(promo) ? "Vencida" : promotionVisibleInAdmin(promo) ? "Ocultar" : "Activar"}</button>
                         <button type="button" className="miniButton dangerMini" onClick={() => beginDeleteSelection("promociones", promo.id)}>Borrar</button>
                       </div>
                     </article>
