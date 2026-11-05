@@ -200,6 +200,102 @@ export async function PATCH(request) {
   const action = String(body.action || "");
   if (!id) return Response.json({ error: "Falta el ID de la cuenta." }, { status: 400 });
 
+  // Corregir una entrega sin borrar el pedido ni crear una nueva ganancia.
+  // En inventario compartido solo permite modificar el Gmail del cliente y su cupo.
+  // Las credenciales globales se editan aparte en Inventario.
+  if (action === "editar_entrega") {
+    const assignmentId = String(body.asignacion_id || "");
+    if (!assignmentId) return Response.json({ error: "Falta la asignación que deseas corregir." }, { status: 400 });
+    const [{ data: assignment, error: assignmentError }, { data: account, error: accountError }] = await Promise.all([
+      auth.supabase.from("inventario_asignaciones").select("*").eq("id", assignmentId).eq("inventario_id", id).single(),
+      auth.supabase.from("inventario_cuentas").select("*").eq("id", id).single()
+    ]);
+    if (assignmentError || !assignment) return Response.json({ error: assignmentError?.message || "No existe esa asignación." }, { status: 404 });
+    if (accountError || !account) return Response.json({ error: accountError?.message || "Cuenta no encontrada." }, { status: 404 });
+
+    // Cambiar de grupo significa mover SOLO esta asignación a otro inventario
+    // del mismo servicio; nunca renombrar el grupo compartido.
+    const destinationId = String(body.inventario_destino_id || id);
+    let destination = account;
+    if (destinationId !== id) {
+      if (!assignment.activo || account.etiqueta === "externa" || !account.grupo) {
+        return Response.json({ error: "Solo se pueden trasladar entregas activas de grupos familiares del stock." }, { status: 400 });
+      }
+      const { data: found, error: destinationError } = await auth.supabase
+        .from("inventario_cuentas").select("*").eq("id", destinationId).single();
+      if (destinationError || !found) return Response.json({ error: "Grupo familiar de destino no encontrado." }, { status: 404 });
+      if (found.servicio_id !== account.servicio_id || !found.grupo || found.etiqueta === "externa" || ["fallida", "reemplazada"].includes(found.estado)) {
+        return Response.json({ error: "Selecciona un grupo familiar disponible del mismo servicio." }, { status: 400 });
+      }
+      destination = found;
+    }
+    const nextSlot = Number(body.cupo_numero ?? assignment.cupo_numero);
+    const maxSlot = destination.etiqueta === "externa" ? 50 : Number(destination.cupos_total || 1);
+    if (!Number.isInteger(nextSlot) || nextSlot < 1 || nextSlot > maxSlot) {
+      return Response.json({ error: `El cupo debe estar entre 1 y ${maxSlot}.` }, { status: 400 });
+    }
+    if ((destinationId !== id || nextSlot !== Number(assignment.cupo_numero)) && assignment.activo) {
+      const { data: occupied, error: occError } = await auth.supabase
+        .from("inventario_asignaciones").select("id")
+        .eq("inventario_id", destinationId).eq("cupo_numero", nextSlot).eq("activo", true);
+      if (occError) return Response.json({ error: occError.message }, { status: 400 });
+      if ((occupied || []).some(a => a.id !== assignment.id)) {
+        return Response.json({ error: `El cupo/perfil ${nextSlot} ya está ocupado. Escoge uno libre.` }, { status: 409 });
+      }
+    }
+    const correo_cliente = String(body.correo_cliente || "").trim() || null;
+    if (correo_cliente && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(correo_cliente)) {
+      return Response.json({ error: "El correo del cliente no es válido." }, { status: 400 });
+    }
+    if (account.grupo && !correo_cliente) {
+      return Response.json({ error: "El grupo familiar necesita el correo Gmail propio del cliente." }, { status: 400 });
+    }
+    const changesAssignment = { inventario_id: destinationId, cupo_numero: nextSlot, correo_cliente };
+    let changesAccount = null;
+    if (account.etiqueta === "externa") {
+      const correo = String(body.correo || "").trim();
+      const grupo = String(body.grupo || "").trim();
+      if (!correo && !grupo) return Response.json({ error: "Indica correo, usuario o grupo para el pedido por fuera." }, { status: 400 });
+      const existingNotes = String(account.notas || "");
+      const notesWithoutServer = existingNotes.split(/\r?\n/).filter(line => !/^Servidor:\s*/i.test(line)).join("\n").trim();
+      const server = String(body.servidor || "").trim();
+      const notes = [server ? `Servidor: ${server}` : "", notesWithoutServer].filter(Boolean).join("\n");
+      const pins = { ...(account.perfiles_pins || {}) };
+      const oldSlot = String(assignment.cupo_numero);
+      const newSlot = String(nextSlot);
+      // En cuentas externas solo hay una entrega propia. Trasladar su PIN si cambia el perfil.
+      if (oldSlot !== newSlot) delete pins[oldSlot];
+      const pin = String(body.pin || "").trim();
+      if (pin) pins[newSlot] = pin;
+      else delete pins[newSlot];
+      changesAccount = {
+        correo: correo || grupo, grupo: grupo || null,
+        clave: String(body.clave || "").trim() || null,
+        notas: notes || null, perfiles_pins: pins,
+        cupos_total: Math.max(Number(account.cupos_total || 1), nextSlot)
+      };
+    }
+    // Primero modificar la asignación; si falla la cuenta externa, revertir lo modificado.
+    const { data: updatedAssignment, error: editError } = await auth.supabase
+      .from("inventario_asignaciones").update(changesAssignment).eq("id", assignment.id)
+      .select("*").single();
+    if (editError) return Response.json({ error: editError.message }, { status: 400 });
+    if (changesAccount) {
+      const { error: accountEditError } = await auth.supabase.from("inventario_cuentas")
+        .update(changesAccount).eq("id", id);
+      if (accountEditError) {
+        await auth.supabase.from("inventario_asignaciones")
+          .update({ inventario_id: id, cupo_numero: assignment.cupo_numero, correo_cliente: assignment.correo_cliente })
+          .eq("id", assignment.id);
+        return Response.json({ error: accountEditError.message }, { status: 400 });
+      }
+    }
+    await recalcInventoryState(auth.supabase, id);
+    if (destinationId !== id) await recalcInventoryState(auth.supabase, destinationId);
+    await syncOrderMembership(auth.supabase, assignment.suscripcion_id);
+    return Response.json({ asignacion: updatedAssignment });
+  }
+
   if (action === "renovar_cuenta") {
     const tipo = String(body.tipo || "meses");
 const cantidad = Number(body.cantidad || 1);

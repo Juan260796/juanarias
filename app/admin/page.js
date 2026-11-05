@@ -205,6 +205,9 @@ function inventoryGroupMessage(form, service, provider) {
   if (isYoutubeService(service) && form.grupo) {
     return `${encabezado}\n\nGrupo familiar: ${form.grupo}\nCupos: ${Number(form.cupos_total) || 1}`;
   }
+  if (normalizeText(nombre).includes("emby")) {
+    return `${encabezado}\n\nServidor: ${form.servidor || ""}\nUsuario: ${form.correo || ""}\nContraseña: ${form.clave || ""}\nPerfiles: ${Number(form.cupos_total) || 1}`;
+  }
   const num = Math.max(1, Number(form.cupos_total) || 1);
   const pins = Array.from({ length: num }, (_, index) => form.perfiles_pins?.[String(index + 1)] || "");
   const hasPins = pins.some(pin => String(pin).trim());
@@ -317,7 +320,7 @@ const REGLAS_PREDETERMINADAS = `¡IMPORTANTE!
 ❌Prohibido compartir la pantalla con otras personas
 🚫Si viola alguna de las reglas, la pantalla quedará suspendida.🚫`;
 
-const VARIABLES_PLANTILLA = ["cliente", "servicio", "tiempo", "correo", "clave", "perfil", "pin", "proveedor", "fecha_seleccionada", "fecha_vencimiento", "grupo", "correo_cliente"];
+const VARIABLES_PLANTILLA = ["cliente", "servicio", "tiempo", "correo", "clave", "perfil", "pin", "proveedor", "fecha_seleccionada", "fecha_vencimiento", "grupo", "correo_cliente", "servidor"];
 
 // Una plantilla se comparte entre las duraciones del mismo servicio.
 function claveServicioPlantilla(nombre) {
@@ -340,6 +343,19 @@ function bloquearScrollNumerico(event) {
   if (event.currentTarget === document.activeElement) {
     event.currentTarget.blur();
   }
+}
+
+
+// Emby almacena el servidor en notas para mantener compatibilidad con la base existente.
+function extractEmbyServer(notes) {
+  return String(notes || "").split(/\r?\n/).find(line => /^Servidor:\s*/i.test(line))?.replace(/^Servidor:\s*/i, "").trim() || "";
+}
+function stripEmbyServer(notes) {
+  return String(notes || "").split(/\r?\n/).filter(line => !/^Servidor:\s*/i.test(line)).join("\n").trim();
+}
+function composeEmbyNotes(server, notes) {
+  const rest = stripEmbyServer(notes);
+  return [String(server || "").trim() ? `Servidor: ${String(server).trim()}` : "", rest].filter(Boolean).join("\n");
 }
 
 export default function Admin() {
@@ -427,11 +443,11 @@ const [profitEditValue, setProfitEditValue] = useState("");
   const [showDeliveryServiceMatches, setShowDeliveryServiceMatches] = useState(false);
   const [deliveryClientQuery, setDeliveryClientQuery] = useState("");
   const [generatedInventoryGroupMessage, setGeneratedInventoryGroupMessage] = useState("");
-  const [inventoryForm, setInventoryForm] = useState({ servicio_id: "", proveedor_id: "", correo: "", clave: "", pin: "", perfiles_pins: {}, grupo: "", cupos_total: "", duracion_tipo: "", duracion_cantidad: "", notas: "", fecha_carga: todayISO() });
+  const [inventoryForm, setInventoryForm] = useState({ servidor: "", servicio_id: "", proveedor_id: "", correo: "", clave: "", pin: "", perfiles_pins: {}, grupo: "", cupos_total: "", duracion_tipo: "", duracion_cantidad: "", notas: "", fecha_carga: todayISO() });
   const [deliveryForm, setDeliveryForm] = useState({ servicio_id: "", cliente_id: "", inventario_id: "", cupo_numero: "", correo_cliente: "", fecha_inicio: todayISO() });
   const [orderSource, setOrderSource] = useState("external");
   const [youtubeExternalMode, setYoutubeExternalMode] = useState("grupo");
-  const [externalOrderForm, setExternalOrderForm] = useState({ proveedor_id: "", correo: "", clave: "", perfil: 1, pin: "", grupo: "", correo_cliente: "" });
+  const [externalOrderForm, setExternalOrderForm] = useState({ servidor: "", proveedor_id: "", correo: "", clave: "", perfil: 1, pin: "", grupo: "", correo_cliente: "" });
   const [generatedDelivery, setGeneratedDelivery] = useState(null);
   const [renewalDelivery, setRenewalDelivery] = useState(null);
   const [generatedGuarantees, setGeneratedGuarantees] = useState([]);
@@ -440,6 +456,11 @@ const [profitEditValue, setProfitEditValue] = useState("");
   const [editingInventoryId, setEditingInventoryId] = useState("");
   const [inventoryEditForm, setInventoryEditForm] = useState({});
   const [editingSubscriptionId, setEditingSubscriptionId] = useState("");
+  const [editingCredentialsId, setEditingCredentialsId] = useState("");
+  const [credentialsEdit, setCredentialsEdit] = useState({});
+  const [managedInventoryNotices, setManagedInventoryNotices] = useState([]);
+  const [selectedInventoryNotices, setSelectedInventoryNotices] = useState([]);
+  const [inventoryAssignmentPage, setInventoryAssignmentPage] = useState({});
   const [subscriptionEditForm, setSubscriptionEditForm] = useState({ fecha_inicio: "", servicio_id: "", cupo_numero: "", duracion_tipo: "meses", duracion_cantidad: 1 });
   const [deleteSelection, setDeleteSelection] = useState({ suscripciones: [], clientes: [], servicios: [], promociones: [], proveedores: [], inventario: [] });
   const [deleteMode, setDeleteMode] = useState({});
@@ -503,6 +524,13 @@ const [profitEditValue, setProfitEditValue] = useState("");
   const refresh = useCallback(async (accessToken = token) => {
     const result = await api(`/api/admin/data?today=${todayISO()}`, {}, accessToken);
     setData(result);
+    try {
+      const notices = await api("/api/admin/avisos-inventario", {}, accessToken);
+      setManagedInventoryNotices(notices.gestionados || []);
+    } catch (noticeError) {
+      // El panel seguirá cargando si la migración de avisos aún no se ha ejecutado.
+      console.warn("No se pudieron consultar los avisos gestionados:", noticeError);
+    }
   }, [api, token]);
 
   useEffect(() => {
@@ -716,6 +744,24 @@ const [profitEditValue, setProfitEditValue] = useState("");
       reward.estado === "entregado" && reward.entregado_at && new Date(reward.entregado_at).getTime() >= cutoff
     ).slice().sort((a, b) => String(b.entregado_at || "").localeCompare(String(a.entregado_at || "")));
   }, [data.premios_fidelidad]);
+
+  // Avisos de baja manual: los perfiles se liberan en el panel automáticamente,
+  // pero el administrador todavía debe retirarlos en la plataforma oficial.
+  const inventoryExpiryNotices = useMemo(() => {
+    const subscriptions = new Map(enrichedSubs.map(sub => [sub.id, sub]));
+    const inventory = new Map((data.inventario_historico || data.inventario || []).map(item => [item.id, item]));
+    // Escoger la última entrega de cada pedido: una cuenta antigua que ya fue
+    // reemplazada no debe provocar avisos falsos.
+    const latest = new Map();
+    for (const assignment of data.asignaciones || []) {
+      if (!assignment.suscripcion_id || latest.has(assignment.suscripcion_id)) continue;
+      latest.set(assignment.suscripcion_id, assignment);
+    }
+    return [...latest.values()]
+      .map(assignment => ({ assignment, sub: subscriptions.get(assignment.suscripcion_id), account: inventory.get(assignment.inventario_id) }))
+      .filter(({ sub, account, assignment }) => sub && account && account.etiqueta !== "externa" && sub.days !== null && sub.days <= 0 && sub.days >= -30 && !managedInventoryNotices.includes(`${assignment.id}:${sub.fecha_vencimiento}`))
+      .sort((a, b) => (a.sub.days ?? 0) - (b.sub.days ?? 0));
+  }, [data.asignaciones, data.inventario, data.inventario_historico, enrichedSubs, managedInventoryNotices]);
 
   const assignmentCountByInventory = useMemo(() => {
     const counts = {};
@@ -1224,7 +1270,8 @@ const [profitEditValue, setProfitEditValue] = useState("");
       if (isYoutubeService(serviceSnapshot) && !String(formSnapshot.grupo || "").trim()) {
         throw new Error("Escribe el nombre del grupo familiar de YouTube.");
       }
-      await api("/api/admin/inventario", { method: "POST", body: JSON.stringify(formSnapshot) });
+      if (normalizeText(serviceSnapshot?.nombre).includes("emby") && !String(formSnapshot.servidor || "").trim()) throw new Error("Escribe el servidor Emby.");
+      await api("/api/admin/inventario", { method: "POST", body: JSON.stringify({ ...formSnapshot, notas: composeEmbyNotes(formSnapshot.servidor, formSnapshot.notas) }) });
       setGeneratedInventoryGroupMessage(inventoryGroupMessage(formSnapshot, serviceSnapshot, providerSnapshot));
       setInventoryForm({ servicio_id: "", proveedor_id: "", correo: "", clave: "", pin: "", perfiles_pins: {}, grupo: "", cupos_total: "", duracion_tipo: "", duracion_cantidad: "", notas: "", fecha_carga: todayISO() });
       setInventoryServiceQuery("");
@@ -1235,7 +1282,10 @@ const [profitEditValue, setProfitEditValue] = useState("");
   async function saveInventoryEdit(e) {
     e.preventDefault();
     await runAction(async () => {
-      await api("/api/admin/inventario", { method: "PATCH", body: JSON.stringify({ id: editingInventoryId, ...inventoryEditForm }) });
+      const editServiceData = (data.servicios || []).find(s => s.id === inventoryEditForm.servicio_id);
+      await api("/api/admin/inventario", { method: "PATCH", body: JSON.stringify({ id: editingInventoryId, ...inventoryEditForm,
+        ...(normalizeText(editServiceData?.nombre).includes("emby") ? { notas: composeEmbyNotes(inventoryEditForm.servidor, inventoryEditForm.notas) } : {})
+      }) });
       setEditingInventoryId("");
       setInventoryEditForm({});
     }, "Cuenta actualizada.");
@@ -1256,7 +1306,12 @@ const [profitEditValue, setProfitEditValue] = useState("");
     cupos_total: item.cupos_total || 1,
     duracion_tipo: item.duracion_tipo || "dias",
     duracion_cantidad: item.duracion_cantidad || 1,
-    fecha_carga: item.fecha_carga || ""
+    fecha_carga: item.fecha_carga || "",
+    servidor: extractEmbyServer(item.notas),
+    notas: stripEmbyServer(item.notas),
+    clave: item.clave || "",
+    grupo: item.grupo || "",
+    perfiles_pins: item.perfiles_pins || {}
   });
 }
 
@@ -1310,7 +1365,8 @@ const [profitEditValue, setProfitEditValue] = useState("");
         fecha_creacion: fechaCortaMensaje(sub.fecha_inicio),
         fecha_inicio: fechaCortaMensaje(sub.fecha_inicio),
         fecha_vencimiento: formatDate(sub.fecha_vencimiento), grupo: item.grupo || "",
-        correo_cliente: clientEmail
+        correo_cliente: clientEmail,
+        servidor: extractEmbyServer(item.notas)
       };
       return withPurchaseThanks(aplicarPlantilla(plantilla.contenido, datos));
     }
@@ -1324,7 +1380,7 @@ const [profitEditValue, setProfitEditValue] = useState("");
     const notes = "";
     return withPurchaseThanks(`${service?.nombre || "Servicio"} x${durationLabel} (${purchaseDate})${providerTag}
 
-CORREO: ${item.correo || ""}
+${normalizeText(service?.nombre).includes("emby") ? `SERVIDOR: ${extractEmbyServer(item.notas)}\nUSUARIO` : "CORREO"}: ${item.correo || ""}
 CLAVE: ${item.clave || ""}${profileLine}${pinLine}
 
 ${REGLAS_PREDETERMINADAS}
@@ -1725,6 +1781,7 @@ duracion_cantidad: selectedDeliveryService.duracion_cantidad
           pin: externalOrderForm.pin,
           grupo: youtubePorGrupo ? grupoExterno : "",
           correo_cliente: youtubePorGrupo ? correoClienteExterno : "",
+          servidor: externalOrderForm.servidor || "",
           ganancia_neta: Number(profitValue || 0),
           fecha_ganancia: subForm.fecha_inicio || todayISO()
         })
@@ -1769,6 +1826,178 @@ duracion_cantidad: selectedDeliveryService.duracion_cantidad
     } finally {
       setWorking(false);
     }
+  }
+
+  async function markInventoryNoticeManaged(assignment, sub) {
+    const clave = `${assignment.id}:${sub.fecha_vencimiento}`;
+    await runAction(async () => {
+      await api("/api/admin/avisos-inventario", {
+        method: "POST",
+        body: JSON.stringify({ asignacion_id: assignment.id, suscripcion_id: sub.id, fecha_vencimiento: sub.fecha_vencimiento })
+      });
+      setManagedInventoryNotices((prev) => [...new Set([...prev, clave])]);
+    }, "Aviso marcado como gestionado. El pedido y sus ganancias se conservan.");
+  }
+
+  // La selección es por aviso (asignación + vencimiento), no por cuenta.
+  // Una renovación con fecha nueva constituye un aviso diferente.
+  function toggleInventoryNoticeSelection(key) {
+    setSelectedInventoryNotices((prev) => prev.includes(key) ? prev.filter((item) => item !== key) : [...prev, key]);
+  }
+
+  async function markSelectedInventoryNoticesManaged() {
+    const selected = inventoryExpiryNotices.filter(({ assignment, sub }) =>
+      selectedInventoryNotices.includes(`${assignment.id}:${sub.fecha_vencimiento}`)
+    );
+    if (!selected.length || working) return;
+    setWorking(true);
+    setError("");
+    setMessage("");
+    const succeeded = [];
+    const failed = [];
+    try {
+      // La API valida cada pedido y fecha para no marcar avisos de renovaciones distintas.
+      for (const { assignment, sub } of selected) {
+        const key = `${assignment.id}:${sub.fecha_vencimiento}`;
+        try {
+          await api("/api/admin/avisos-inventario", {
+            method: "POST",
+            body: JSON.stringify({ asignacion_id: assignment.id, suscripcion_id: sub.id, fecha_vencimiento: sub.fecha_vencimiento })
+          });
+          succeeded.push(key);
+        } catch (e) {
+          failed.push(`${sub.cliente?.nombre || "Cliente"}: ${e.message}`);
+        }
+      }
+      if (succeeded.length) {
+        setManagedInventoryNotices((prev) => [...new Set([...prev, ...succeeded])]);
+        setSelectedInventoryNotices((prev) => prev.filter((key) => !succeeded.includes(key)));
+      }
+      if (failed.length) {
+        setError(`${succeeded.length} gestionado(s), ${failed.length} sin gestionar. ${failed[0]}`);
+      } else {
+        setMessage(`${succeeded.length} aviso(s) marcados como gestionados. No se modificaron pedidos ni ganancias.`);
+      }
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  function needsCustomerInvitationEmail(assignment) {
+    const account = assignment?.item || {};
+    const service = assignment?.sub?.servicio || account.servicios || {};
+    const name = normalizeText(service.nombre || "");
+    return name.includes("youtube") && Boolean(account.grupo) || name.includes("gemini") && (Boolean(account.grupo) || effectiveDeliveryType(service) === "gemini");
+  }
+
+  function beginCredentialsEdit(assignment) {
+    if (!assignment?.item) return;
+    const account = assignment.item;
+    setEditingCredentialsId(assignment.id);
+    setCredentialsEdit({
+      cupo_numero: Number(assignment.cupo_numero || 1),
+      inventario_destino_id: account.id,
+      correo_cliente: assignment.correo_cliente || "",
+      correo: account.correo || "",
+      clave: account.clave || "",
+      grupo: account.grupo || "",
+      pin: account.perfiles_pins?.[String(assignment.cupo_numero)] || account.pin || "",
+      servidor: extractEmbyServer(account.notas),
+    });
+  }
+
+  async function saveCredentialsEdit(assignment) {
+    if (!assignment?.item) return;
+    const account = assignment.item;
+    await runAction(async () => {
+      await api("/api/admin/inventario", {
+        method: "PATCH",
+        body: JSON.stringify({
+          id: account.id,
+          action: "editar_entrega",
+          asignacion_id: assignment.id,
+          cupo_numero: Number(credentialsEdit.cupo_numero),
+          ...(needsCustomerInvitationEmail(assignment) ? { correo_cliente: credentialsEdit.correo_cliente, inventario_destino_id: credentialsEdit.inventario_destino_id || account.id } : {}),
+          ...(account.etiqueta === "externa" ? {
+            correo: credentialsEdit.correo,
+            clave: credentialsEdit.clave,
+            grupo: credentialsEdit.grupo,
+            pin: credentialsEdit.pin,
+            servidor: credentialsEdit.servidor
+          } : {})
+        })
+      });
+      setEditingCredentialsId("");
+    }, "Credenciales y asignación actualizadas. También se reflejarán en el panel del cliente.");
+  }
+
+  function renderCredentialsEditor(assignment) {
+    if (!assignment?.item || editingCredentialsId !== assignment.id) return null;
+    const account = assignment.item;
+    const isFamilyInventory = needsCustomerInvitationEmail(assignment) && account.etiqueta !== "externa" && Boolean(account.grupo);
+    const familyGroups = isFamilyInventory ? (data.inventario || []).filter((item) =>
+      item.servicio_id === account.servicio_id && Boolean(item.grupo) &&
+      !["fallida", "reemplazada"].includes(item.estado) &&
+      (item.id === account.id || Array.from({ length: Number(item.cupos_total || 1) }, (_, index) => index + 1).some((slot) =>
+        !(data.asignaciones || []).some((a) => a.activo && a.inventario_id === item.id && Number(a.cupo_numero) === slot)
+      ))
+    ) : [];
+    const destinationAccount = familyGroups.find((item) => item.id === credentialsEdit.inventario_destino_id) || account;
+    const maxSlot = account.etiqueta === "externa" ? 50 : Number(destinationAccount.cupos_total || 1);
+    const availableSlots = Array.from({ length: maxSlot }, (_, i) => i + 1).filter((slot) =>
+      (destinationAccount.id === account.id && slot === Number(assignment.cupo_numero)) || !(data.asignaciones || []).some((a) =>
+        a.activo && a.id !== assignment.id && a.inventario_id === destinationAccount.id && Number(a.cupo_numero) === slot
+      )
+    );
+    return (
+      <div className="jcCredentialEditor">
+        {needsCustomerInvitationEmail(assignment) && (
+          <label>Correo del cliente (para invitación al grupo)
+            <input type="email" value={credentialsEdit.correo_cliente || ""} onChange={(e) => setCredentialsEdit((prev) => ({ ...prev, correo_cliente: e.target.value }))} placeholder="cliente@gmail.com" />
+          </label>
+        )}
+        {isFamilyInventory && (
+          <label>Grupo familiar del cliente
+            <select value={destinationAccount.id} onChange={(e) => {
+              const target = familyGroups.find((item) => item.id === e.target.value);
+              if (!target) return;
+              const libres = Array.from({ length: Number(target.cupos_total || 1) }, (_, i) => i + 1).filter((slot) =>
+                (target.id === account.id && slot === Number(assignment.cupo_numero)) ||
+                !(data.asignaciones || []).some((a) => a.activo && a.inventario_id === target.id && Number(a.cupo_numero) === slot)
+              );
+              setCredentialsEdit((prev) => ({ ...prev, inventario_destino_id: target.id, cupo_numero: libres[0] || Number(assignment.cupo_numero) }));
+            }}>
+              {familyGroups.map((item) => <option key={item.id} value={item.id}>{item.grupo} {item.id === account.id ? "(actual)" : "(disponible)"}</option>)}
+            </select>
+            <small>Traslada únicamente este pedido; los demás integrantes y el nombre del grupo no cambian.</small>
+          </label>
+        )}
+        <label>Perfil / cupo del cliente (actual y libres)
+          <select value={credentialsEdit.cupo_numero} onChange={(e) => setCredentialsEdit((prev) => ({ ...prev, cupo_numero: Number(e.target.value) }))}>
+            {availableSlots.map((slot) => <option key={slot} value={slot}>Perfil / cupo {slot}{destinationAccount.id === account.id && slot === Number(assignment.cupo_numero) ? " (actual)" : " (libre)"}</option>)}
+          </select>
+        </label>
+        {account.etiqueta === "externa" && (
+          <>
+            {!needsCustomerInvitationEmail(assignment) && (
+              <label>Correo / usuario de acceso<input value={credentialsEdit.correo || ""} onChange={(e) => setCredentialsEdit((prev) => ({ ...prev, correo: e.target.value }))} /></label>
+            )}
+            {!needsCustomerInvitationEmail(assignment) && (
+              <label>Contraseña<input value={credentialsEdit.clave || ""} onChange={(e) => setCredentialsEdit((prev) => ({ ...prev, clave: e.target.value }))} /></label>
+            )}
+            {normalizeText(assignment.sub?.servicio?.nombre || account.servicios?.nombre || "").includes("emby") && <label>Servidor Emby<input value={credentialsEdit.servidor || ""} onChange={(e) => setCredentialsEdit((prev) => ({ ...prev, servidor: e.target.value }))} /></label>}
+            {!needsCustomerInvitationEmail(assignment) && (
+              <label>PIN<input value={credentialsEdit.pin || ""} onChange={(e) => setCredentialsEdit((prev) => ({ ...prev, pin: e.target.value }))} /></label>
+            )}
+          </>
+        )}
+        <div className="inlineActions">
+          <button type="button" className="miniButton primaryMini" disabled={working} onClick={() => saveCredentialsEdit(assignment)}>Guardar cambios</button>
+          <button type="button" className="miniButton" onClick={() => setEditingCredentialsId("")}>Cancelar</button>
+        </div>
+        <small>Solo cambia los datos de este cliente y su asignación. Las credenciales y demás integrantes del grupo original no se modifican.</small>
+      </div>
+    );
   }
 
   function beginSubscriptionEdit(s) {
@@ -2128,7 +2357,7 @@ if (cambiarCuenta && (!nuevoInventarioId || !nuevoCupo)) {
         method: "PATCH",
         body: JSON.stringify({ id: cliente.id, nombre: cliente.nombre, username: cliente.username, telefono: cliente.telefono, password })
       });
-      const text = `🎉 ¡Hola, ${cliente.nombre}! Bienvenido a JUAN CUENTAS 💙\n\n🔐 Tu acceso al panel de clientes:\n👤 Usuario: ${String(cliente.username || "").trim().replace(/^@+/, "")}\n🔑 Contraseña: ${password}\n🌐 Ingresa aquí: https://juan-cuentas.vercel.app/cliente\n\n✨ Consulta tus servicios y promociones cuando quieras.
+      const text = `🎉 ¡Hola, ${cliente.nombre}! Qué gusto tenerte en JUAN CUENTAS 💙\n\n🔐 Tu acceso al panel de clientes:\n👤 Usuario: ${String(cliente.username || "").trim().replace(/^@+/, "")}\n🔑 Contraseña: ${password}\n🌐 Ingresa aquí: https://juancuentas.com/cliente\n\n✨ Consulta tus servicios y promociones cuando quieras.
 
 🎁🏆 ¡Cada compra te acerca a un premio especial!
 
@@ -2689,7 +2918,12 @@ Cuenta para renovación
                 {rows.map((s) => {
                   const status = accountStatus(s);
                   const wa = whatsappHref(s);
-                  const assignment = activeAssignmentBySubscription[s.id];
+                  const assignment = activeAssignmentBySubscription[s.id] || (() => {
+                    const last = (data.asignaciones || []).find(a => a.suscripcion_id === s.id);
+                    if (!last) return null;
+                    const item = [...(data.inventario || []), ...(data.inventario_externo || [])].find(i => i.id === last.inventario_id);
+                    return { ...last, item };
+                  })();
                   const editing = editingSubscriptionId === s.id;
                   
                   return (
@@ -2715,58 +2949,39 @@ Cuenta para renovación
       <option key={group.key} value={group.key}>{group.nombre}</option>
     ))}
   </select>
-) : s.servicio?.nombre || "Servicio"}</td>
+) : <div className="jcServiceAndDuration"><strong>{s.servicio?.nombre || "Servicio"}</strong>{view === "activas" && <small>Duración: {durationText(inferOrderDuration(s.fecha_inicio, s.fecha_vencimiento).tipo, inferOrderDuration(s.fecha_inicio, s.fecha_vencimiento).cantidad)}</small>}</div>}</td>
                       <td>{editing && assignment ? (
-                        <input className="smallNumberInput" type="number" onWheel={bloquearScrollNumerico} min="1" inputMode="numeric" value={subscriptionEditForm.cupo_numero} onChange={(e) => setSubscriptionEditForm((prev) => ({ ...prev, cupo_numero: e.target.value }))} />
+                        <select aria-label="Perfil o cupo libre" value={subscriptionEditForm.cupo_numero} onChange={(e) => setSubscriptionEditForm((prev) => ({ ...prev, cupo_numero: e.target.value }))}>
+                          {Array.from({ length: assignment.item?.etiqueta === "externa" ? 50 : Number(assignment.item?.cupos_total || 1) }, (_, index) => index + 1)
+                            .filter((slot) => slot === Number(assignment.cupo_numero) || !(data.asignaciones || []).some((a) => a.activo && a.id !== assignment.id && a.inventario_id === assignment.inventario_id && Number(a.cupo_numero) === slot))
+                            .map((slot) => <option value={slot} key={slot}>{slot === Number(assignment.cupo_numero) ? `Perfil ${slot} (actual)` : `Perfil ${slot} (libre)`}</option>)}
+                        </select>
                       ) : assignment ? `${effectiveDeliveryType(s.servicio) === "estandar" ? "Perfil" : "Cupo"} ${assignment.cupo_numero}` : "—"}</td>
                       <td>
   {assignment?.item ? (
-    <details className="credentialsDetails">
+    <details className="credentialsDetails" open={editingCredentialsId === assignment.id ? true : undefined}>
       <summary>🔐 Ver credenciales</summary>
 
       <div className="credentialsPanel">
-        <div>
-          <strong>Cuenta:</strong>
-          <span>
-            {assignment.item.correo ||
-              assignment.item.grupo ||
-              "—"}
-          </span>
-        </div>
-
-        <div>
-          <strong>Contraseña:</strong>
-          <span>
-            {assignment.item.clave || "—"}
-          </span>
-        </div>
-
-        {assignment.cupo_numero && (
-          <div>
-            <strong>
-              {effectiveDeliveryType(s.servicio) === "estandar"
-                ? "Perfil:"
-                : "Cupo:"}
-            </strong>
-            <span>{assignment.cupo_numero}</span>
-          </div>
+        {needsCustomerInvitationEmail(assignment) && (
+          <div><strong>Correo del grupo:</strong><span>{assignment.item.grupo || assignment.item.correo || "—"}</span></div>
         )}
-
-        {assignment.item.perfiles_pins &&
-          assignment.item.perfiles_pins[
-            String(assignment.cupo_numero)
-          ] && (
-            <div>
-              <strong>PIN:</strong>
-              <span>
-                {
-                  assignment.item.perfiles_pins[
-                    String(assignment.cupo_numero)
-                  ]
-                }
-              </span>
-            </div>
-          )}
+        {needsCustomerInvitationEmail(assignment) && assignment.correo_cliente && (
+          <div><strong>Correo del cliente:</strong><span>{assignment.correo_cliente}</span></div>
+        )}
+        {!needsCustomerInvitationEmail(assignment) && (
+          <div><strong>{normalizeText(s.servicio?.nombre).includes("emby") ? "Usuario:" : "Cuenta:"}</strong><span>{assignment.item.correo || "—"}</span></div>
+        )}
+        {extractEmbyServer(assignment.item.notas) && (
+          <div><strong>Servidor:</strong><span>{extractEmbyServer(assignment.item.notas)}</span></div>
+        )}
+        {assignment.item.clave && <div><strong>Contraseña:</strong><span>{assignment.item.clave}</span></div>}
+        <div><strong>Perfil / cupo:</strong><span>{assignment.cupo_numero}</span></div>
+        {(assignment.item.perfiles_pins?.[String(assignment.cupo_numero)] || assignment.item.pin) && (
+          <div><strong>PIN:</strong><span>{assignment.item.perfiles_pins?.[String(assignment.cupo_numero)] || assignment.item.pin}</span></div>
+        )}
+        <button type="button" className="miniButton" onClick={() => beginCredentialsEdit(assignment)}>✏️ Corregir credenciales / cupo</button>
+        {renderCredentialsEditor(assignment)}
       </div>
     </details>
   ) : (
@@ -3049,6 +3264,11 @@ Cuenta para renovación
                     <input type="email" placeholder="cliente@gmail.com" value={externalOrderForm.correo_cliente || ""} onChange={(e) => setExternalOrderForm((prev) => ({ ...prev, correo_cliente: e.target.value }))} required />
                   </label>
                 </div>
+              )}
+              {normalizeText(selectedService?.nombre).includes("emby") && (
+                <label>Servidor Emby
+                  <input placeholder="Servidor Emby" value={externalOrderForm.servidor || ""} onChange={e => setExternalOrderForm(p => ({...p,servidor:e.target.value}))} />
+                </label>
               )}
               <div className="threeCols externalCredentialGrid">
                 {!(isYoutubeService(selectedService) && youtubeExternalMode === "grupo") && (
@@ -4117,7 +4337,7 @@ async function saveProfitEdit(item) {
       cliente: "María Pérez", servicio: servicio?.nombre || "Netflix", tiempo: "1 mes",
       correo: "cuenta@ejemplo.com", clave: "clave-ejemplo", perfil: "2", pin: "1234",
       proveedor: "JU", fecha_seleccionada: "17 octubre", fecha_creacion: "17 octubre", fecha_inicio: "17 octubre", fecha_vencimiento: "17/11/2026",
-      grupo: "familia@ejemplo.com", correo_cliente: "cliente@gmail.com"
+      grupo: "familia@ejemplo.com", correo_cliente: "cliente@gmail.com", servidor: "https://servidor-emby.ejemplo"
     };
     return (
       <>
@@ -4652,11 +4872,16 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
               <label>Correo del grupo<input placeholder="Correo del grupo" value={inventoryForm.grupo} onChange={(e) => setInventoryForm({ ...inventoryForm, grupo: e.target.value })} required /></label>
             ) : selectedUploadService ? (
               <div className="twoCols">
-                <label>Correo / acceso<input placeholder={uploadType === "chatgpt" ? "c90917058+2207@gmail.com" : "cuenta@correo.com"} value={inventoryForm.correo} onChange={(e) => setInventoryForm({ ...inventoryForm, correo: e.target.value })} required /></label>
+                <label>{normalizeText(selectedUploadService.nombre).includes("emby") ? "Usuario Emby" : "Correo / acceso"}<input placeholder={normalizeText(selectedUploadService.nombre).includes("emby") ? "Usuario Emby" : (uploadType === "chatgpt" ? "c90917058+2207@gmail.com" : "cuenta@correo.com")} value={inventoryForm.correo} onChange={(e) => setInventoryForm({ ...inventoryForm, correo: e.target.value })} required /></label>
                 <label>Contraseña (opcional)<input placeholder="Si aplica" value={inventoryForm.clave} onChange={(e) => setInventoryForm({ ...inventoryForm, clave: e.target.value })} /></label>
               </div>
             ) : null}
 
+            {selectedUploadService && normalizeText(selectedUploadService.nombre).includes("emby") && (
+              <label>Servidor Emby
+                <input placeholder="Dirección o URL del servidor" value={inventoryForm.servidor || ""} onChange={e => setInventoryForm(p => ({...p, servidor:e.target.value}))} required />
+              </label>
+            )}
             {selectedUploadService && (
               <>
             <label className="numberProfilesTest">
@@ -4975,6 +5200,9 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
   </label>
 
 </div>
+                  {normalizeText(editService?.nombre).includes("emby") && (
+                    <label>Servidor Emby<input value={inventoryEditForm.servidor || ""} onChange={e=>setInventoryEditForm(p=>({...p,servidor:e.target.value}))}/></label>
+                  )}
                   <div className="twoCols"><input placeholder="Correo / acceso" value={inventoryEditForm.correo || ""} onChange={(e) => setInventoryEditForm({ ...inventoryEditForm, correo: e.target.value })} /><input placeholder="Grupo (Gemini)" value={inventoryEditForm.grupo || ""} onChange={(e) => setInventoryEditForm({ ...inventoryEditForm, grupo: e.target.value })} /></div>
                   <div className="twoCols"><input placeholder="Clave" value={inventoryEditForm.clave || ""} onChange={(e) => setInventoryEditForm({ ...inventoryEditForm, clave: e.target.value })} /><label>Cantidad de tiempo<input type="number" onWheel={bloquearScrollNumerico} min="1" max={inventoryEditForm.duracion_tipo === "dias" ? 30 : undefined} value={inventoryEditForm.duracion_cantidad || 1} onChange={(e) => setInventoryEditForm({ ...inventoryEditForm, duracion_cantidad: e.target.value })} /></label></div>
                   <label>Cupos / perfiles<input type="number" onWheel={bloquearScrollNumerico} min="1" max="50" value={inventoryEditForm.cupos_total || 1} onChange={(e) => setInventoryEditForm({ ...inventoryEditForm, cupos_total: e.target.value })} /></label>
@@ -5022,14 +5250,27 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
                           <td><strong>{used}/{item.cupos_total}</strong><small>{Math.max(0, Number(item.cupos_total || 1) - used)} libres</small></td>
                           <td><span className={displayState === "cuenta de garantía" ? "status guaranteeStatus" : displayState === "fallida" ? "status off" : displayState === "agotada" ? "status assignedStatus" : "status ok"}>{displayState}</span>{guaranteeSource && <small className="guaranteeSourceText">cambio por {guaranteeSource.grupo || guaranteeSource.correo || "cuenta anterior"}</small>}</td>
                           <td>
-                            {assignments.length === 0 ? <span className="noPhone">Sin entregas</span> : <details className="assignmentDetails"><summary>{assignments.length} cliente(s) · {remainingText(Math.min(...assignments.map((assignment) => assignment.sub?.days ?? 999999)))}</summary>{assignments.map((assignment) => {
+                            {assignments.length === 0 ? <span className="noPhone">Sin entregas</span> : <details className="assignmentDetails jcCompactAssignments"><summary>{assignments.length} cliente(s) · Ver cupos</summary>
+                              <div className="jcAssignmentPager">
+                                <span>Mostrando {Math.min((Math.min(Number(inventoryAssignmentPage[item.id] || 0), Math.ceil(assignments.length / 5) - 1) * 5) + 1, assignments.length)}–{Math.min((Math.min(Number(inventoryAssignmentPage[item.id] || 0), Math.ceil(assignments.length / 5) - 1) + 1) * 5, assignments.length)} de {assignments.length}</span>
+                                <div>
+                                  <button type="button" className="miniButton" disabled={!Number(inventoryAssignmentPage[item.id] || 0)} onClick={() => {setEditingCredentialsId("");setInventoryAssignmentPage(prev => ({...prev,[item.id]:Math.max(0,Number(prev[item.id] || 0)-1)}));}}>Anterior</button>
+                                  <button type="button" className="miniButton" disabled={(Number(inventoryAssignmentPage[item.id] || 0)+1)*5>=assignments.length} onClick={() => {setEditingCredentialsId("");setInventoryAssignmentPage(prev => ({...prev,[item.id]:Number(prev[item.id] || 0)+1}));}}>Siguiente</button>
+                                </div>
+                              </div>
+                              {assignments.slice(Math.min(Number(inventoryAssignmentPage[item.id] || 0), Math.ceil(assignments.length / 5) - 1)*5, (Math.min(Number(inventoryAssignmentPage[item.id] || 0), Math.ceil(assignments.length / 5) - 1)+1)*5).map((assignment) => {
                               const guaranteeText = guaranteeSource ? buildGuaranteeWhatsappMessage(item, assignment, service) : "";
                               const guaranteeWa = guaranteeText && assignment.sub?.cliente?.telefono
                                 ? whatsappUrl(assignment.sub.cliente.telefono, guaranteeText)
                                 : "";
                               return (
                                 <div className="assignmentRow inventoryAssignmentRow" key={assignment.id}>
-                                  <span><b>{assignment.sub?.cliente?.nombre}</b> · {effectiveDeliveryType(service) === "estandar" ? "Perfil" : "Cupo"} {assignment.cupo_numero}{assignment.correo_cliente ? ` · ${assignment.correo_cliente}` : ""}<small className={`daysBadge ${daysTone(assignment.sub?.days)}`}>{remainingText(assignment.sub?.days)}</small></span>
+                                  <span><b>{assignment.sub?.cliente?.nombre}</b> · {effectiveDeliveryType(service) === "estandar" ? "Perfil" : "Cupo"} {assignment.cupo_numero}{assignment.correo_cliente ? ` · Correo del cliente: ${assignment.correo_cliente}` : ""}<small className={`daysBadge ${daysTone(assignment.sub?.days)}`}>{remainingText(assignment.sub?.days)}</small></span>
+                                  <button type="button" className="miniButton" onClick={() => {
+                                    if (editingCredentialsId === assignment.id) setEditingCredentialsId("");
+                                    else beginCredentialsEdit({ ...assignment, item });
+                                  }}>✏️ {editingCredentialsId === assignment.id ? "Cerrar edición" : "Editar correo / cupo"}</button>
+                                  {renderCredentialsEditor({ ...assignment, item })}
                                   {guaranteeSource && guaranteeWa && <a className="waTableButton guaranteeWhatsappButton" href={guaranteeWa} target="_blank" rel="noreferrer">WhatsApp garantía</a>}
                                 </div>
                               );
@@ -5169,6 +5410,72 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
           <button className="linkButton desktopLogout" onClick={logout}>Salir</button>
         </header>
         <div className="adminPageContent">
+          {["pedido", "activas", "vencidas"].includes(view) && inventoryExpiryNotices.length > 0 && (
+            <details className="jcInventoryExpiryAlert jcInventoryNoticeCompact">
+              <summary>⚠️ Avisos pendientes de retiro ({inventoryExpiryNotices.length})</summary>
+              <div className="jcInventoryNoticeContents">
+                <p>Marca como gestionados únicamente los clientes que ya retiraste de la plataforma oficial. Los pedidos, las ganancias y los cupos del panel no se modifican.</p>
+                <div className="jcInventoryNoticeToolbar">
+                  <label className="jcInventoryNoticeSelectAll">
+                    <input type="checkbox" disabled={working}
+                      checked={inventoryExpiryNotices.length > 0 && inventoryExpiryNotices.every(({assignment,sub}) => selectedInventoryNotices.includes(`${assignment.id}:${sub.fecha_vencimiento}`))}
+                      onChange={(event) => {
+                        const visibleKeys = inventoryExpiryNotices.map(({assignment,sub}) => `${assignment.id}:${sub.fecha_vencimiento}`);
+                        setSelectedInventoryNotices((prev) => event.target.checked
+                          ? [...new Set([...prev, ...visibleKeys])]
+                          : prev.filter((key) => !visibleKeys.includes(key)));
+                      }}
+                    />
+                    Seleccionar todos
+                  </label>
+                  <span>{inventoryExpiryNotices.filter(({assignment,sub}) => selectedInventoryNotices.includes(`${assignment.id}:${sub.fecha_vencimiento}`)).length} seleccionado(s)</span>
+                  <button type="button" className="miniButton jcNoticeManagedButton"
+                    disabled={working || !inventoryExpiryNotices.some(({assignment,sub}) => selectedInventoryNotices.includes(`${assignment.id}:${sub.fecha_vencimiento}`))}
+                    onClick={markSelectedInventoryNoticesManaged}>
+                    {working ? "Guardando..." : "Gestionar seleccionados"}
+                  </button>
+                </div>
+                <div className="jcInventoryExpiryList jcInventoryNoticeRows">
+                  {inventoryExpiryNotices.map(({assignment,sub,account}) => {
+                    const noticeKey = `${assignment.id}:${sub.fecha_vencimiento}`;
+                    const invitation = needsCustomerInvitationEmail({ ...assignment, item: account, sub });
+                    const emby = normalizeText(sub.servicio?.nombre || "").includes("emby");
+                    const pin = account.perfiles_pins?.[String(assignment.cupo_numero)] || account.pin;
+                    return (
+                      <div key={noticeKey} className="jcInventoryNoticeRow">
+                        <div className="jcInventoryNoticeRowTop">
+                          <label className="jcInventoryNoticeCheckbox">
+                            <input type="checkbox" checked={selectedInventoryNotices.includes(noticeKey)} disabled={working}
+                              onChange={() => toggleInventoryNoticeSelection(noticeKey)} />
+                            <span className="jcInventoryNoticeIdentity"><strong>{sub.cliente?.nombre || "Cliente"}</strong><small>{sub.servicio?.nombre || "Servicio"} · {effectiveDeliveryType(sub.servicio) === "estandar" ? "Perfil" : "Cupo"} {assignment.cupo_numero}</small></span>
+                          </label>
+                          <small className="jcInventoryNoticeExpired">{sub.days === 0 ? "Venció hoy" : `Hace ${Math.abs(sub.days)} día(s)`}</small>
+                          <button type="button" className="miniButton jcNoticeManagedButton" disabled={working} onClick={() => markInventoryNoticeManaged(assignment, sub)}>Gestionado</button>
+                        </div>
+                        <details className="jcInventoryNoticeCredentials">
+                          <summary>🔐 Ver credenciales</summary>
+                          <div className="jcInventoryNoticeCredentialsBody">
+                            {invitation ? (
+                              <>
+                                <div><strong>Correo del grupo:</strong><span>{account.grupo || account.correo || "—"}</span></div>
+                                {assignment.correo_cliente && <div><strong>Correo del cliente:</strong><span>{assignment.correo_cliente}</span></div>}
+                              </>
+                            ) : (
+                              <div><strong>{emby ? "Usuario:" : "Cuenta:"}</strong><span>{account.correo || account.grupo || "—"}</span></div>
+                            )}
+                            {emby && extractEmbyServer(account.notas) && <div><strong>Servidor:</strong><span>{extractEmbyServer(account.notas)}</span></div>}
+                            {account.clave && <div><strong>Contraseña:</strong><span>{account.clave}</span></div>}
+                            <div><strong>Perfil / cupo:</strong><span>{assignment.cupo_numero}</span></div>
+                            {pin && <div><strong>PIN:</strong><span>{pin}</span></div>}
+                          </div>
+                        </details>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </details>
+          )}
           {view === "pedido" && renderPedido()}
           {view === "activas" && renderActivas()}
           {view === "vencidas" && renderVencidas()}

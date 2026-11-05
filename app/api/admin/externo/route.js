@@ -62,6 +62,7 @@ export async function POST(request) {
   const pin = String(body.pin || "").trim() || null;
   const proveedor_id = String(body.proveedor_id || "").trim() || null;
   const grupo = String(body.grupo || "").trim();
+  const servidor = String(body.servidor || "").trim();
   const correo_cliente = String(body.correo_cliente || "").trim();
   const perfil = Number(body.perfil || 1);
   const ganancia_neta = Number(body.ganancia_neta);
@@ -118,7 +119,7 @@ export async function POST(request) {
     grupo: esYoutube && grupo ? grupo : (type === "gemini" ? correo : null),
     perfil: null,
     etiqueta: "externa",
-    notas: "Cuenta externa / perfil comprado por fuera",
+    notas: [servidor ? `Servidor: ${servidor}` : "", "Cuenta externa / perfil comprado por fuera"].filter(Boolean).join("\n"),
     estado: "agotada",
     cupos_total: Math.max(1, perfil),
     duracion_tipo: durationType,

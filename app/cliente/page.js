@@ -212,20 +212,33 @@ export default function Cliente() {
     router.replace("/login");
   }
 
+  function extractEmbyServer(notes) {
+    return String(notes || "").split(/\r?\n/).find(line => /^Servidor:\s*/i.test(line))?.replace(/^Servidor:\s*/i, "").trim() || "";
+  }
+
+  function stripEmbyServer(notes) {
+    return String(notes || "").split(/\r?\n/).filter(line => !/^Servidor:\s*/i.test(line)).join("\n").trim();
+  }
+
   function renderAccess(assignment) {
     if (!assignment) return null;
     const account = nested(assignment.inventario_cuentas);
     if (!account) return null;
-    const type = nested(account.servicios)?.tipo_entrega || "estandar";
+    const service = nested(account.servicios);
+    const name = String(service?.nombre || "").toLowerCase();
+    const type = name.includes("gemini") ? "gemini" : (service?.tipo_entrega || "estandar");
+    const isFamily = type === "gemini" || (Boolean(account.grupo) && name.includes("youtube"));
+    const isEmby = name.includes("emby");
+    const embyServer = extractEmbyServer(account.notas);
 
     return (
       <details className="clientAccessBox">
         <summary>🔐 Ver credenciales {assignment.es_reemplazo ? "· Garantía" : ""}</summary>
         <div className="accessRows">
-          {type === "gemini" ? (
+          {isFamily ? (
             <>
               <div><span>CORREO DEL CLIENTE</span><strong>{assignment.correo_cliente || "—"}</strong>{assignment.correo_cliente && <button type="button" onClick={(event) => copyValue(assignment.correo_cliente, event)}>Copiar</button>}</div>
-              <div><span>GRUPO</span><strong>{account.grupo || account.correo || "—"}</strong><button type="button" onClick={(event) => copyValue(account.grupo || account.correo || "", event)}>Copiar</button></div>
+              <div><span>CORREO DEL GRUPO / GRUPO FAMILIAR</span><strong>{account.grupo || account.correo || "—"}</strong><button type="button" onClick={(event) => copyValue(account.grupo || account.correo || "", event)}>Copiar</button></div>
               <div><span>CUPO</span><strong>{assignment.cupo_numero}</strong></div>
             </>
           ) : type === "chatgpt" ? (
@@ -236,7 +249,8 @@ export default function Cliente() {
             </>
           ) : (
             <>
-              <div><span>CORREO / ACCESO</span><strong>{account.correo}</strong><button type="button" onClick={(event) => copyValue(account.correo, event)}>Copiar</button></div>
+              {embyServer && <div><span>SERVIDOR EMBY</span><strong>{embyServer}</strong><button type="button" onClick={event => copyValue(embyServer,event)}>Copiar</button></div>}
+              <div><span>{isEmby ? "USUARIO" : "CORREO / ACCESO"}</span><strong>{account.correo}</strong><button type="button" onClick={(event) => copyValue(account.correo, event)}>Copiar</button></div>
               {account.clave && <div><span>CLAVE</span><strong>{account.clave}</strong><button type="button" onClick={(event) => copyValue(account.clave, event)}>Copiar</button></div>}
               <div><span>PERFIL</span><strong>{assignment.cupo_numero}</strong></div>
               {(() => {
@@ -256,9 +270,9 @@ export default function Cliente() {
               <span>🫡 Prohibido cambiar cualquier tipo de información</span>
               <span>🚨 Ingresa solo en las apps oficiales, no por navegador</span>
             </>
-          ) : type === "gemini" ? (
+          ) : isFamily ? (
             <>
-              <b>Invitación de Gemini</b>
+              <b>Invitación de grupo familiar</b>
               <span>📩 Acepta la invitación enviada a tu Gmail.</span>
               <span>☑️ Verifica que quedes dentro del grupo familiar.</span>
             </>
@@ -271,7 +285,7 @@ export default function Cliente() {
               <span>❌ Prohibido compartir la pantalla con otras personas</span>
             </>
           )}
-          {account.notas && <em>{account.notas}</em>}
+          {stripEmbyServer(account.notas) && <em>{stripEmbyServer(account.notas)}</em>}
         </div>
       </details>
     );
