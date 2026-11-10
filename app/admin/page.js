@@ -257,7 +257,10 @@ const VIEW_TITLES = {
   crearCliente: "Crear cliente",
   crearStreaming: "Crear servicio streaming",
   plantillas: "Plantillas de mensajes",
-  cargaMasiva: "Carga masiva"
+  cargaMasiva: "Carga masiva",
+  catalogo: "Catálogo para clientes",
+  dispositivos: "Dispositivos ChatGPT",
+  renovar: "Renovar pedido"
 };
 
 const VALID_VIEWS = new Set(Object.keys(VIEW_TITLES));
@@ -434,6 +437,8 @@ const [profitEditValue, setProfitEditValue] = useState("");
   const [renewalProfits, setRenewalProfits] = useState({});
   const [renewalDates, setRenewalDates] = useState({});
   const [renewMenuId, setRenewMenuId] = useState("");
+  const [renewalTargetId, setRenewalTargetId] = useState("");
+  const [renewalNoticeOrigin, setRenewalNoticeOrigin] = useState(null);
   const [renewAccountMode, setRenewAccountMode] = useState({});
   const [renewSelectedInventory,setRenewSelectedInventory] = useState({});
   const [renewSelectedSlot, setRenewSelectedSlot] = useState({});
@@ -469,6 +474,17 @@ const [profitEditValue, setProfitEditValue] = useState("");
   const [credentialsEdit, setCredentialsEdit] = useState({});
   const [managedInventoryNotices, setManagedInventoryNotices] = useState([]);
   const [selectedInventoryNotices, setSelectedInventoryNotices] = useState([]);
+  const [catalogItems, setCatalogItems] = useState([]);
+  const [catalogEditId, setCatalogEditId] = useState("");
+  const [catalogSearch, setCatalogSearch] = useState("");
+  const [catalogFilter, setCatalogFilter] = useState("todos");
+  const [catalogForm, setCatalogForm] = useState({ titulo: "", descripcion: "", duracion: "", precio: "", orden: 0, activo: true });
+  const [deviceRecords, setDeviceRecords] = useState([]);
+  const [deviceSearch, setDeviceSearch] = useState("");
+  const [deviceOnlyPending, setDeviceOnlyPending] = useState(false);
+  const [deviceOrderId, setDeviceOrderId] = useState("");
+  const [deviceForm, setDeviceForm] = useState({ tipo: "Celular", dispositivo: "", identificador: "", notas: "" });
+
   const [inventoryAssignmentPage, setInventoryAssignmentPage] = useState({});
   const [subscriptionEditForm, setSubscriptionEditForm] = useState({ fecha_inicio: "", servicio_id: "", cupo_numero: "", duracion_tipo: "meses", duracion_cantidad: 1 });
   const [deleteSelection, setDeleteSelection] = useState({ suscripciones: [], clientes: [], servicios: [], promociones: [], proveedores: [], inventario: [] });
@@ -536,6 +552,15 @@ const [profitEditValue, setProfitEditValue] = useState("");
     await api("/api/admin/promociones/expirar", {}, accessToken);
     const result = await api(`/api/admin/data?today=${todayISO()}`, {}, accessToken);
     setData(result);
+    // Estas herramientas son independientes de la carga principal.
+    // Si falta la migración, siguen funcionando las demás secciones.
+    const [catalogRes, deviceRes] = await Promise.allSettled([
+      api("/api/admin/catalogo", {}, accessToken),
+      api("/api/admin/dispositivos", {}, accessToken)
+    ]);
+    if (catalogRes.status === "fulfilled") setCatalogItems(catalogRes.value.items || []);
+    if (deviceRes.status === "fulfilled") setDeviceRecords(deviceRes.value.dispositivos || []);
+
     try {
       const notices = await api("/api/admin/avisos-inventario", {}, accessToken);
       setManagedInventoryNotices(notices.gestionados || []);
@@ -1861,15 +1886,32 @@ duracion_cantidad: selectedDeliveryService.duracion_cantidad
     }
   }
 
-  async function markInventoryNoticeManaged(assignment, sub) {
+  // Los avisos no se marcan como gestionados al pulsar Renovar.
+  // Primero se abre el formulario completo y solo se confirma tras guardar.
+  function openRenewalFromNotice(assignment, sub) {
+    setRenewalTargetId(sub.id);
+    setRenewalNoticeOrigin({
+      asignacion_id: assignment.id,
+      suscripcion_id: sub.id,
+      fecha_vencimiento: sub.fecha_vencimiento
+    });
+    setRenewalDelivery(null);
+    setRenewMenuId(sub.id);
+    setRenewAccountModeValue(sub.id, "actual");
+    setRenewalDates(prev => ({...prev, [sub.id]: todayISO()}));
+    navigate("renovar");
+    if (typeof window !== "undefined") window.scrollTo({top:0, behavior:"smooth"});
+  }
+
+  async function markInventoryNoticeManaged(assignment, sub, tipoGestion = "retirado") {
     const clave = `${assignment.id}:${sub.fecha_vencimiento}`;
     await runAction(async () => {
       await api("/api/admin/avisos-inventario", {
         method: "POST",
-        body: JSON.stringify({ asignacion_id: assignment.id, suscripcion_id: sub.id, fecha_vencimiento: sub.fecha_vencimiento })
+        body: JSON.stringify({ asignacion_id: assignment.id, suscripcion_id: sub.id, fecha_vencimiento: sub.fecha_vencimiento, tipo_gestion: tipoGestion })
       });
       setManagedInventoryNotices((prev) => [...new Set([...prev, clave])]);
-    }, "Aviso marcado como gestionado. El pedido y sus ganancias se conservan.");
+    }, "Aviso gestionado. Esta acción solo registra lo realizado en la plataforma oficial, no renueva ni cambia ganancias.");
   }
 
   // La selección es por aviso (asignación + vencimiento), no por cuenta.
@@ -1895,7 +1937,7 @@ duracion_cantidad: selectedDeliveryService.duracion_cantidad
         try {
           await api("/api/admin/avisos-inventario", {
             method: "POST",
-            body: JSON.stringify({ asignacion_id: assignment.id, suscripcion_id: sub.id, fecha_vencimiento: sub.fecha_vencimiento })
+            body: JSON.stringify({ asignacion_id: assignment.id, suscripcion_id: sub.id, fecha_vencimiento: sub.fecha_vencimiento, tipo_gestion: "retirado" })
           });
           succeeded.push(key);
         } catch (e) {
@@ -2215,6 +2257,23 @@ if (cambiarCuenta && (!nuevoInventarioId || !nuevoCupo)) {
         nuevo_cupo: nuevoCupo,
         perfil_misma_cuenta: cambiarCuenta ? null : (renewSameAccountSlot[s.id] || "mismo")
       }) });
+      // La renovación ya fue registrada con su fecha y ganancia antes de cerrar el aviso.
+      // En caso de fallo al registrar el aviso, NUNCA se repite la renovación.
+      let noticeWarning = "";
+      if (renewalNoticeOrigin?.suscripcion_id === s.id) {
+        const notice = renewalNoticeOrigin;
+        try {
+          await api("/api/admin/avisos-inventario", {
+            method: "POST",
+            body: JSON.stringify({ ...notice, tipo_gestion: "renovado" })
+          });
+          setManagedInventoryNotices(prev => [...new Set([...prev, `${notice.asignacion_id}:${notice.fecha_vencimiento}`])]);
+          setRenewalNoticeOrigin(null);
+        } catch (noticeError) {
+          noticeWarning = ` Aviso: la renovación se guardó, pero no se pudo confirmar el aviso (${noticeError.message}). No pulses Aplicar renovación nuevamente.`;
+          setRenewalNoticeOrigin(null);
+        }
+      }
       const latest = await api(`/api/admin/data?today=${todayISO()}`);
       setData(latest);
       const renewed = (latest.suscripciones || []).find((row) => row.id === s.id) || s;
@@ -2239,8 +2298,16 @@ if (cambiarCuenta && (!nuevoInventarioId || !nuevoCupo)) {
         deliveryText = withPurchaseThanks(`Hola ${cliente?.nombre || "Cliente"} 😁, tu servicio ${servicio?.nombre || "Servicio"} ha sido renovado por ${durationText(draft.tipo, rawQty)}.\nFecha de renovación: ${formatDate(fecha_inicio)}\nPróximo vencimiento: ${formatDate(fecha_vencimiento)}.`);
       }
       setRenewalDelivery({ id: s.id, text: deliveryText, cliente });
+      // El navegador puede bloquear la escritura tras una petición asíncrona.
+      // En ese caso el mensaje sigue disponible para copiar y abrir WhatsApp.
+      let copiedAutomatically = false;
+      try {
+        await navigator.clipboard.writeText(deliveryText);
+        copiedAutomatically = true;
+        showCopyNotice();
+      } catch (_) { /* Se ofrece botón manual justo debajo del resultado */ }
       if (modoRenovacion === "externo") setRenewExternalDetails(prev => { const next={...prev}; delete next[s.id]; return next; });
-      setMessage(`Renovada hasta ${formatDate(fecha_vencimiento)}. Mensaje de entrega generado.`);
+      setMessage(`Renovada hasta ${formatDate(fecha_vencimiento)}. ${copiedAutomatically ? "✅ Mensaje copiado: abre WhatsApp y pega." : "Mensaje listo: pulsa Copiar mensaje y abre WhatsApp."}${noticeWarning}`);
       setRenewMenuId(s.id);
       setRenewalDates((prev) => { const next = { ...prev }; delete next[s.id]; return next; });
     } catch (err) {
@@ -2549,16 +2616,16 @@ if (asignacionActual && item.id === asignacionActual.inventario_id) {
   });
 }
 
-  function renewalDropdown(s) {
+  function renewalDropdown(s, standalone = false) {
     const draft = getRenewalDraft(s.id);
     const max = draft.tipo === "dias" ? 30 : draft.tipo === "meses" ? 12 : 1;
-    const isOpen = renewMenuId === s.id;
+    const isOpen = standalone || renewMenuId === s.id;
     
     return (
-      <div className="renewMenuWrap">
-        <button type="button" className="miniButton renewTrigger" onClick={() => setRenewMenuId(isOpen ? "" : s.id)}>
+      <div className={standalone ? "renewMenuWrap jcStandaloneRenewWrap" : "renewMenuWrap"}>
+        {!standalone && <button type="button" className="miniButton renewTrigger" onClick={() => setRenewMenuId(isOpen ? "" : s.id)}>
           Renovar <span>{isOpen ? "▴" : "▾"}</span>
-        </button>
+        </button>}
         {isOpen && (
           <div className="renewDropdown jcRenewForm">
             <label className="jcRenewFull">
@@ -2786,7 +2853,7 @@ Cuenta para renovación
               />
             </label>
             <button type="button" className="miniButton primaryMini" disabled={working} onClick={() => renewSubscription(s)}>Aplicar renovación</button>
-            {renewalDelivery?.id === s.id && (
+            {renewalDelivery?.id === s.id && view !== "renovar" && (
               <div className="jcRenewFull generatedDelivery" style={{minWidth:0, maxWidth:"100%", overflow:"hidden", marginTop:12}}>
                 <div className="generatedHeader"><strong>✅ Mensaje de entrega de la renovación</strong></div>
                 <textarea aria-label="Mensaje de entrega de la renovación" readOnly value={renewalDelivery.text} style={{width:"100%", minHeight:210, boxSizing:"border-box", resize:"vertical"}} />
@@ -4538,6 +4605,174 @@ async function saveProfitEdit(item) {
     );
   }
 
+  function renderRenovacionDesdeAviso() {
+    const sub = enrichedSubs.find(item => item.id === renewalTargetId);
+    return <>
+      <div className="pageHeading">
+        <p className="muted">AVISOS DE INVENTARIO</p>
+        <h1>Renovar pedido del cliente</h1>
+        <p className="pageLead">Selecciona la fecha, duración, ganancia y cuenta o perfil. El aviso se confirma únicamente cuando la renovación se guarda.</p>
+      </div>
+      {!sub ? <div className="card emptyState">El pedido ya no está disponible. Regresa a los avisos.</div> :
+        <div className="card jcStandaloneRenewCard">
+          <div className="jcRenewSummary">
+            <strong>{sub.cliente?.nombre || "Cliente"}</strong>
+            <span>{sub.servicio?.nombre || "Servicio"}</span>
+            <small>Vencimiento anterior: {formatDate(sub.fecha_vencimiento)} · {remainingText(sub.days)}</small>
+          </div>
+          {renewalDelivery?.id === sub.id && <div className="generatedDelivery" style={{marginBottom:18,padding:14,border:"1px solid #3985ab",borderRadius:12,background:"#07182a"}}>
+            <strong>✅ Renovación guardada · mensaje listo para enviar</strong>
+            <textarea aria-label="Mensaje para enviar" readOnly value={renewalDelivery.text} style={{display:"block",width:"100%",minHeight:155,boxSizing:"border-box",marginTop:10,marginBottom:10}} />
+            <div className="inlineActions"><button type="button" className="miniButton primaryMini" onClick={event=>copyText(renewalDelivery.text,event)}>📋 Copiar mensaje</button>
+            {renewalDelivery.cliente?.telefono && <button type="button" className="miniButton" onClick={()=>window.open(whatsappUrl(renewalDelivery.cliente.telefono,""),"_blank","noopener,noreferrer")}>💬 Abrir WhatsApp</button>}</div>
+            <small>Si el navegador permitió la copia automática, solo abre WhatsApp y pega. Si no, utiliza Copiar mensaje.</small>
+          </div>}
+          {renewalDropdown(sub, true)}
+        </div>
+      }
+      <button type="button" className="miniButton" style={{marginTop:18}} onClick={() => {setRenewalNoticeOrigin(null);navigate("vencidas");}}>← Volver a cuentas vencidas</button>
+    </>;
+  }
+
+  function renderCatalogo() {
+    const withPrice = value => {
+      const text = String(value ?? "").trim();
+      if (!text || /^(consultar|sin precio|pendiente|por definir|n\/?a|gratis|no disponible)$/i.test(text)) return false;
+      return (text.match(/\d+/g) || []).some(n => Number(n) > 0);
+    };
+    const visibleCatalogItems = catalogItems.filter(item => {
+      const text = `${item.titulo || ""} ${item.duracion || ""} ${item.descripcion || ""} ${item.precio || ""}`.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+      const query = catalogSearch.trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+      if (query && !text.includes(query)) return false;
+      if (catalogFilter === "publicados") return item.activo && withPrice(item.precio);
+      if (catalogFilter === "ocultos") return !item.activo;
+      if (catalogFilter === "sinprecio") return !withPrice(item.precio);
+      return true;
+    });
+    const save = async (event) => {
+      event.preventDefault();
+      await runAction(async () => {
+        await api("/api/admin/catalogo", { method: catalogEditId ? "PATCH" : "POST", body: JSON.stringify({ ...catalogForm, ...(catalogEditId ? { id: catalogEditId } : {}) }) });
+        setCatalogEditId("");
+        setCatalogForm({ titulo: "", descripcion: "", duracion: "", precio: "", orden: 0, activo: true });
+        await refresh();
+      }, catalogEditId ? "Producto del catálogo actualizado." : "Producto añadido al catálogo.");
+    };
+    return <>
+      <div className="pageHeading"><p className="muted">CATÁLOGO</p><h1>Catálogo para clientes</h1><p className="pageLead">Edita servicios, precios y descripciones. Los servicios sin precio, con «Consultar» o con precio $0 no aparecerán en el catálogo de clientes ni en el PDF, pero seguirán aquí para editarlos.</p><div className="inlineActions" style={{marginTop:12}}><a className="miniButton primaryMini" href="/cliente/catalogo" target="_blank" rel="noreferrer">🌐 Ver catálogo actualizado en línea</a></div></div>
+      <form className="card adminForm standaloneForm" onSubmit={save}>
+        <label>Nombre del servicio<input value={catalogForm.titulo} required maxLength={120} onChange={e => setCatalogForm({...catalogForm,titulo:e.target.value})}/></label>
+        <label>Duración o plan<input value={catalogForm.duracion} placeholder="Ej. 1 mes" onChange={e => setCatalogForm({...catalogForm,duracion:e.target.value})}/></label>
+        <label>Precio a mostrar (opcional; sin precio no se publica)<input value={catalogForm.precio} placeholder="Ej. $12.000" onChange={e => setCatalogForm({...catalogForm,precio:e.target.value})}/></label>
+        <label>Descripción<textarea value={catalogForm.descripcion} rows={3} onChange={e => setCatalogForm({...catalogForm,descripcion:e.target.value})}/></label>
+        <label>Orden de aparición<input type="number" value={catalogForm.orden} onChange={e => setCatalogForm({...catalogForm,orden:Number(e.target.value)})}/></label>
+        <label className="toggleLine"><input type="checkbox" checked={catalogForm.activo} onChange={e => setCatalogForm({...catalogForm,activo:e.target.checked})}/> Visible para clientes</label>
+        <div className="inlineActions"><button className="miniButton primaryMini" disabled={working}>{catalogEditId ? "Guardar cambios" : "Agregar al catálogo"}</button>
+          {catalogEditId && <button type="button" className="miniButton" onClick={() => {setCatalogEditId("");setCatalogForm({ titulo:"",descripcion:"",duracion:"",precio:"",orden:0,activo:true });}}>Cancelar</button>}
+        </div>
+      </form>
+      <h2 style={{marginTop:24}}>Servicios del catálogo ({visibleCatalogItems.length} de {catalogItems.length})</h2>
+      <div className="card" style={{display:"flex",gap:14,alignItems:"flex-end",flexWrap:"wrap",padding:16,marginBottom:14,background:"linear-gradient(120deg,#0b2545,#07182f)",border:"1px solid #23629b",borderRadius:16,boxShadow:"0 5px 18px #0003"}}>
+        <label style={{display:"flex",flexDirection:"column",gap:8,flex:"2 1 270px",minWidth:0,margin:0,color:"#b9dfff",fontSize:13,fontWeight:700}}>
+          <span>🔎 Buscar servicio o plan</span>
+          <input type="search" value={catalogSearch} onChange={e=>setCatalogSearch(e.target.value)} placeholder="Netflix, Canva, 30 días..." style={{boxSizing:"border-box",width:"100%",height:44,padding:"0 14px",borderRadius:11,border:"1px solid #2875b4",background:"#061a34",color:"#eff9ff",outlineColor:"#39b8ff",fontSize:14,boxShadow:"none"}} />
+        </label>
+        <label style={{display:"flex",flexDirection:"column",gap:8,flex:"1 1 220px",minWidth:0,margin:0,color:"#b9dfff",fontSize:13,fontWeight:700}}>
+          <span>Filtrar por estado</span>
+          <select value={catalogFilter} onChange={e=>setCatalogFilter(e.target.value)} style={{boxSizing:"border-box",width:"100%",height:44,padding:"0 12px",borderRadius:11,border:"1px solid #2875b4",background:"#061a34",color:"#eff9ff",colorScheme:"dark",fontSize:14,boxShadow:"none",cursor:"pointer"}}>
+            <option value="todos">Todos los servicios</option>
+            <option value="publicados">Publicados con precio</option>
+            <option value="sinprecio">Sin precio</option>
+            <option value="ocultos">Ocultos manualmente</option>
+          </select>
+        </label>
+        {(catalogSearch || catalogFilter !== "todos") && <button type="button" className="miniButton" style={{height:44,background:"#103a69",border:"1px solid #3382bd",color:"#e4f6ff",borderRadius:11,padding:"0 16px"}} onClick={()=>{setCatalogSearch("");setCatalogFilter("todos");}}>✕ Limpiar</button>}
+      </div>
+      {!visibleCatalogItems.length && <div className="card emptyState">No hay servicios que coincidan con la búsqueda.</div>}
+      <div className="jcToolCards">{visibleCatalogItems.map(item => <article className="card jcToolCard" key={item.id}>
+        <strong>{item.titulo}</strong> <small>{!item.activo ? "Oculto" : (!String(item.precio || "").trim() || /^(consultar|sin precio|pendiente|por definir|n\/?a|gratis|no disponible)$/i.test(String(item.precio).trim()) || !/\d/.test(String(item.precio)) || !String(item.precio).match(/\d+/g)?.some(n => Number(n) > 0) ? "Sin precio · no publicado" : "Visible")} · {item.duracion || "Sin duración"}</small>
+        {item.descripcion && <p>{item.descripcion}</p>}{item.precio && <b>{item.precio}</b>}
+        <div className="inlineActions"><button className="miniButton" type="button" onClick={() => { setCatalogEditId(item.id); setCatalogForm({titulo:item.titulo,descripcion:item.descripcion || "",duracion:item.duracion || "",precio:item.precio || "",orden:item.orden || 0,activo:item.activo}); window.scrollTo({top:0,behavior:"smooth"}); }}>Editar</button>
+          <button className="miniButton dangerMini" type="button" onClick={() => { if(!window.confirm(`¿Eliminar ${item.titulo} del catálogo?`)) return;runAction(async()=>{await api("/api/admin/catalogo",{method:"DELETE",body:JSON.stringify({id:item.id})}); await refresh();},"Producto eliminado del catálogo."); }}>Borrar</button>
+        </div>
+      </article>)}</div>
+    </>;
+  }
+
+  function renderDispositivos() {
+    const subsById = new Map(enrichedSubs.map(item => [item.id, item]));
+    const activeAssignments = (data.asignaciones || []).filter(a => a.activo);
+    const accounts = new Map([...(data.inventario || []), ...(data.inventario_externo || [])].map(a => [String(a.id), a]));
+    const chatOrders = new Map(enrichedSubs.filter(sub => /chat\s*gpt/i.test(sub.servicio?.nombre || "") && (sub.days === null || sub.days >= 0)).map(sub => [sub.id, sub]));
+    const records = new Map(deviceRecords.map(d => [d.suscripcion_id, d]));
+    const groups = new Map();
+    for (const assignment of activeAssignments) {
+      const sub = chatOrders.get(assignment.suscripcion_id);
+      if (!sub) continue;
+      const account = accounts.get(String(assignment.inventario_id));
+      const accountEmail = String(account?.correo || account?.email || "").trim();
+      const accountName = accountEmail || String(account?.grupo || account?.nombre || "Cuenta sin correo registrado");
+      const key = String(assignment.inventario_id || `sin-cuenta-${sub.id}`);
+      const searchText = normalizeText(`${accountName} ${sub.cliente?.nombre || ""} ${sub.cliente?.username || ""} ${sub.servicio?.nombre || ""} ${assignment.cupo_numero || ""}`);
+      if (deviceSearch && !searchText.includes(normalizeText(deviceSearch))) continue;
+      const record = records.get(sub.id);
+      if (deviceOnlyPending && record) continue;
+      if (!groups.has(key)) groups.set(key,{key,accountName,entries:[]});
+      // Se agrupa por cuenta, no por cliente, y se evita repetir un pedido.
+      if (!groups.get(key).entries.some(entry => entry.sub.id === sub.id && entry.assignment.cupo_numero === assignment.cupo_numero)) {
+        groups.get(key).entries.push({sub,assignment,record});
+      }
+    }
+    const grouped = [...groups.values()].map(group=>({
+      ...group,
+      entries:group.entries.sort((a,b)=>Number(a.assignment.cupo_numero || 0)-Number(b.assignment.cupo_numero || 0)),
+      pending:group.entries.filter(entry=>!entry.record).length
+    })).sort((a,b)=>b.pending-a.pending || a.accountName.localeCompare(b.accountName));
+    const pendingTotal = [...groups.values()].reduce((n,group)=>n+group.entries.filter(entry=>!entry.record).length,0);
+    const editOrder = (sub) => {
+      const existing = records.get(sub.id);
+      setDeviceOrderId(sub.id);
+      setDeviceForm({tipo:existing?.tipo || "Celular",dispositivo:existing?.dispositivo || "",identificador:existing?.identificador || "",notas:existing?.notas || ""});
+      window.requestAnimationFrame(()=>document.getElementById("jcDeviceEditor")?.scrollIntoView({behavior:"smooth",block:"center"}));
+    };
+    const save = async (event) => {
+      event.preventDefault();
+      await runAction(async() => {await api("/api/admin/dispositivos", {method:"POST", body:JSON.stringify({suscripcion_id:deviceOrderId,...deviceForm})});setDeviceOrderId(""); await refresh();},"Dispositivo registrado para este pedido.");
+    };
+    return <>
+      <div className="pageHeading"><p className="muted">CONTROL CHATGPT</p><h1>Registro de dispositivos</h1><p className="pageLead">Cuentas agrupadas por correo. Despliega una cuenta para ver sus cupos y registrar o editar el dispositivo de cada pedido. Al liberar el cupo, su registro se elimina.</p></div>
+      <div className="jcDeviceFilters">
+        <input className="jcToolSearch" value={deviceSearch} onChange={e=>setDeviceSearch(e.target.value)} placeholder="🔎 Buscar correo, cliente o cupo..." />
+        <label className="jcDevicePendingToggle"><input type="checkbox" checked={deviceOnlyPending} onChange={e=>setDeviceOnlyPending(e.target.checked)} /> Solo pendientes</label>
+      </div>
+      <p className="jcDeviceOverview">📧 {grouped.length} cuenta(s) · ⚠️ {pendingTotal} dispositivo(s) pendiente(s) {deviceOnlyPending ? "en este filtro" : "por registrar"}</p>
+      {deviceOrderId && <form id="jcDeviceEditor" className="card adminForm standaloneForm" onSubmit={save}>
+        <h3>Dispositivo de {subsById.get(deviceOrderId)?.cliente?.nombre || "cliente"}</h3>
+        <label>Tipo de dispositivo<select value={deviceForm.tipo} onChange={e=>setDeviceForm({...deviceForm,tipo:e.target.value})}>{["Celular","PC","Tablet","Otro"].map(x=><option key={x}>{x}</option>)}</select></label>
+        <label>Dispositivo registrado<input required placeholder="Ej. Samsung A54, iPhone 13, PC Windows" value={deviceForm.dispositivo} onChange={e=>setDeviceForm({...deviceForm,dispositivo:e.target.value})}/></label>
+        <label>Identificador (opcional)<input placeholder="Ej. referencia interna" value={deviceForm.identificador} onChange={e=>setDeviceForm({...deviceForm,identificador:e.target.value})}/></label>
+        <label>Notas (opcional)<textarea value={deviceForm.notas} onChange={e=>setDeviceForm({...deviceForm,notas:e.target.value})}/></label>
+        <div className="inlineActions"><button className="miniButton primaryMini" disabled={working}>Guardar dispositivo</button><button type="button" className="miniButton" onClick={()=>setDeviceOrderId("")}>Cancelar</button></div>
+      </form>}
+      {!grouped.length && <div className="card emptyState">No hay cupos ChatGPT que coincidan con la búsqueda.</div>}
+      <div className="jcDeviceGroups">{grouped.map(group=><details className="card jcDeviceGroup" key={group.key}>
+        <summary className="jcDeviceGroupSummary">
+          <span className="jcDeviceGroupTitle">📧 {group.accountName}<small>{group.entries.length} cupo(s) con pedido vigente</small></span>
+          <span className="jcDeviceCount">{group.pending ? `⚠️ ${group.pending} pendiente(s)` : "✅ Todos registrados"}</span>
+          <span className="jcDeviceChevron">▾</span>
+        </summary>
+        <div className="jcDeviceRows">{group.entries.map(({sub,assignment,record})=><div className="jcDeviceRow" key={`${sub.id}-${assignment.id}`}>
+          <div className="jcDeviceRowInfo"><strong>Cupo {assignment.cupo_numero ?? "—"} · {sub.cliente?.nombre || "Cliente"}</strong><small>Vence {formatDate(sub.fecha_vencimiento)}</small><span className={record ? "jcDeviceRegistered" : "jcDeviceMissing"}>{record ? `✅ ${record.tipo}: ${record.dispositivo}` : "⚠️ Dispositivo pendiente de registrar"}</span>{record?.identificador && <small>Referencia: {record.identificador}</small>}</div>
+          <div className="inlineActions"><button type="button" className="miniButton primaryMini" onClick={()=>editOrder(sub)}>{record ? "Editar" : "Registrar"}</button>
+          {record && <button type="button" className="miniButton dangerMini" onClick={()=>{if(!window.confirm("¿Borrar el registro de este dispositivo?"))return;runAction(async()=>{await api("/api/admin/dispositivos",{method:"DELETE",body:JSON.stringify({suscripcion_id:sub.id})});await refresh();},"Registro borrado.");}}>Borrar</button>}</div>
+        </div>)}</div>
+      </details>)}</div>
+      <style jsx>{`
+        .jcDeviceFilters{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:10px 0}.jcDeviceFilters .jcToolSearch{flex:1;min-width:220px;margin:0}.jcDevicePendingToggle{display:flex;align-items:center;gap:8px;font-size:13px;color:#bfdbf4;white-space:nowrap}.jcDevicePendingToggle input{width:17px;height:17px}.jcDeviceOverview{color:#a8d7fb;font-size:14px;margin:12px 0 18px}.jcDeviceGroups{display:grid;gap:11px}.jcDeviceGroup{padding:0!important;overflow:hidden}.jcDeviceGroupSummary{display:flex;align-items:center;gap:14px;cursor:pointer;padding:16px;list-style:none}.jcDeviceGroupSummary::-webkit-details-marker{display:none}.jcDeviceGroupSummary:hover{background:#123050}.jcDeviceGroupTitle{display:flex;flex-direction:column;gap:5px;min-width:0;flex:1;overflow-wrap:anywhere;font-weight:700;color:#f3f9ff}.jcDeviceGroupTitle small{font-weight:400;color:#9fc7e6;font-size:12px}.jcDeviceCount{font-size:12px;color:#ffcb82;white-space:nowrap}.jcDeviceChevron{color:#90cffa;transition:transform .2s}.jcDeviceGroup[open] .jcDeviceChevron{transform:rotate(180deg)}.jcDeviceRows{padding:0 15px 8px;border-top:1px solid #244564}.jcDeviceRow{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 0;border-bottom:1px solid #1b3c5c}.jcDeviceRow:last-child{border-bottom:0}.jcDeviceRowInfo{display:flex;flex-direction:column;gap:5px;min-width:0}.jcDeviceRowInfo strong{font-size:13px}.jcDeviceRowInfo small{font-size:11px;color:#9cbfdb}.jcDeviceMissing{font-size:12px;color:#ffcb82}.jcDeviceRegistered{font-size:12px;color:#8ae4c0}@media(max-width:600px){.jcDeviceRow{align-items:flex-start;flex-direction:column}.jcDeviceGroupSummary{flex-wrap:wrap}.jcDeviceCount{white-space:normal}}
+      `}</style>
+    </>;
+  }
+
   function renderPromociones() {
     const rewardClient = (reward) => Array.isArray(reward.clientes) ? reward.clientes[0] : reward.clientes;
 
@@ -5328,6 +5563,15 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
   return (
     <main className="adminShell">
       <style jsx global>{`
+        .jcStandaloneRenewCard { max-width:720px; padding:24px; border:1px solid #28577d; border-radius:16px; background:#0b2036; }
+        .jcRenewSummary {display:flex; flex-direction:column; gap:6px; margin-bottom:20px; padding-bottom:16px; border-bottom:1px solid #28577d;}
+        .jcRenewSummary strong {color:#eefaff;font-size:20px;}
+        .jcRenewSummary span {color:#74caff;}
+        .jcRenewSummary small {color:#a4c2db;}
+        .jcStandaloneRenewWrap {display:block!important; width:100%; position:static!important;}
+        .jcStandaloneRenewWrap .renewDropdown.jcRenewForm { position:static!important; transform:none!important; inset:auto!important; width:100%!important; max-width:100%!important; box-shadow:none!important; grid-template-columns:repeat(2,minmax(0,1fr)); }
+        .jcStandaloneRenewWrap .renewDropdown.jcRenewForm label {font-size:14px;}
+        @media(max-width:640px) {.jcStandaloneRenewCard {padding:12px;}.jcStandaloneRenewWrap .renewDropdown.jcRenewForm {grid-template-columns:minmax(0,1fr);}.jcStandaloneRenewWrap .renewDropdown.jcRenewForm > * {grid-column:1 / -1;}}
         /* Formulario de renovación de pedidos: diseño compacto y legible */
         .renewDropdown.jcRenewForm {
           width: min(330px, calc(100vw - 36px));
@@ -5428,6 +5672,8 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
           <button className={view === "clientes" ? "active" : ""} onClick={() => navigate("clientes")}><NavIcon name="clients" /><span className="navText">Clientes</span><b>{stats.clientes}</b></button>
           <button className={view === "promociones" ? "active" : ""} onClick={() => navigate("promociones")}><NavIcon name="gift" /><span className="navText">Promociones</span><b>{todayPromotions.length}</b></button>
           <button className={view === "inventario" ? "active" : ""} onClick={() => navigate("inventario")}><NavIcon name="inventory" /><span className="navText">Inventario / Streaming</span><b>{availableInventory.length}</b></button>
+          <button className={view === "dispositivos" ? "active" : ""} onClick={() => navigate("dispositivos")}><NavIcon name="inventory" /><span className="navText">Dispositivos ChatGPT</span></button>
+          <button className={view === "catalogo" ? "active" : ""} onClick={() => navigate("catalogo")}><NavIcon name="gift" /><span className="navText">Catálogo para clientes</span></button>
           <p className="navLabel">GESTIÓN</p>
           <button className={view === "crearCliente" ? "active" : ""} onClick={() => navigate("crearCliente")}><NavIcon name="addClient" /><span className="navText">Crear cliente</span></button>
           <button className={view === "crearStreaming" ? "active" : ""} onClick={() => navigate("crearStreaming")}><NavIcon name="stream" /><span className="navText">Crear servicio streaming</span></button>
@@ -5447,7 +5693,7 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
             <details className="jcInventoryExpiryAlert jcInventoryNoticeCompact">
               <summary>⚠️ Avisos pendientes de retiro ({inventoryExpiryNotices.length})</summary>
               <div className="jcInventoryNoticeContents">
-                <p>Marca como gestionados únicamente los clientes que ya retiraste de la plataforma oficial. Los pedidos, las ganancias y los cupos del panel no se modifican.</p>
+                <p>Marca Liberado cuando hayas retirado al cliente en la plataforma oficial. Para una renovación, abre el formulario completo: el aviso solo se resolverá después de guardar el pedido y su ganancia.</p>
                 <div className="jcInventoryNoticeToolbar">
                   <label className="jcInventoryNoticeSelectAll">
                     <input type="checkbox" disabled={working}
@@ -5483,7 +5729,10 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
                             <span className="jcInventoryNoticeIdentity"><strong>{sub.cliente?.nombre || "Cliente"}</strong><small>{sub.servicio?.nombre || "Servicio"} · {effectiveDeliveryType(sub.servicio) === "estandar" ? "Perfil" : "Cupo"} {assignment.cupo_numero}</small></span>
                           </label>
                           <small className="jcInventoryNoticeExpired">{sub.days === 0 ? "Venció hoy" : `Hace ${Math.abs(sub.days)} día(s)`}</small>
-                          <button type="button" className="miniButton jcNoticeManagedButton" disabled={working} onClick={() => markInventoryNoticeManaged(assignment, sub)}>Gestionado</button>
+                          <div className="jcNoticeActionRow">
+                            <button type="button" className="miniButton jcNoticeManagedButton" disabled={working} onClick={() => markInventoryNoticeManaged(assignment, sub, "retirado")}>Liberado</button>
+                            <button type="button" className="miniButton" disabled={working} onClick={() => openRenewalFromNotice(assignment, sub)}>Renovar mismo cliente</button>
+                          </div>
                         </div>
                         <details className="jcInventoryNoticeCredentials">
                           <summary>🔐 Ver credenciales</summary>
@@ -5510,6 +5759,7 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
             </details>
           )}
           {view === "pedido" && renderPedido()}
+          {view === "renovar" && renderRenovacionDesdeAviso()}
           {view === "activas" && renderActivas()}
           {view === "vencidas" && renderVencidas()}
           {view === "ganancias" && renderGanancias()}
@@ -5520,9 +5770,16 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
           {view === "crearStreaming" && renderCrearStreaming()}
           {view === "plantillas" && renderPlantillas()}
           {view === "cargaMasiva" && renderCargaMasiva()}
+          {view === "catalogo" && renderCatalogo()}
+          {view === "dispositivos" && renderDispositivos()}
         </div>
       </section>
       <style jsx global>{`
+        .jcToolCards{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:14px;margin:15px 0 24px}
+        .jcToolCard{display:flex;flex-direction:column;gap:9px;min-width:0;overflow-wrap:anywhere;padding:16px}
+        .jcToolCard strong{font-size:16px}.jcToolCard small{color:#9fc1da}.jcToolCard p{white-space:pre-wrap;line-height:1.5}
+        .jcToolSearch{width:min(100%,510px);padding:12px;border:1px solid #2e678f;background:#061728;color:#e8f5ff;border-radius:10px}
+        .jcNoticeActionRow{display:flex;flex-wrap:wrap;gap:7px;align-items:center}
         .jcBulkPanel {margin-bottom:20px;padding:24px;background:linear-gradient(145deg,#0c2238,#0a1b30);border:1px solid #234c71;border-radius:16px;color:#deedfc}
         .jcBulkPanel h2 {margin:0 0 6px;font-size:19px;color:#f4faff}
         .jcBulkPanel p {color:#a8c2dc;line-height:1.6}

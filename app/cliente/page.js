@@ -321,6 +321,11 @@ export default function Cliente() {
           {pendingRewards > 0 && <div className="loyaltyPending">🚨🎁 <strong>{pendingRewards}</strong> {pendingRewards === 1 ? "premio pendiente por reclamar" : "premios pendientes por reclamar"}</div>}
         </section>
 
+        <section className="clientPromotions" style={{marginBottom:22}}>
+          <div className="clientSectionTitle"><div><span>📖 CATÁLOGO</span><h2>Descubre nuestros servicios</h2><p>Consulta precios y opciones disponibles en nuestro catálogo actualizado.</p></div></div>
+          <a className="button primary" style={{display:"inline-block",textDecoration:"none",marginTop:12}} href="/cliente/catalogo" target="_blank" rel="noreferrer">📖 Ver catálogo</a>
+        </section>
+
         {promociones.length > 0 && (
           <section className="clientPromotions">
             <div className="clientSectionTitle">
