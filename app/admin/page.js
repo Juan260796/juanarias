@@ -463,6 +463,9 @@ const [profitEditValue, setProfitEditValue] = useState("");
   const [youtubeExternalMode, setYoutubeExternalMode] = useState("grupo");
   const [externalOrderForm, setExternalOrderForm] = useState({ servidor: "", proveedor_id: "", correo: "", clave: "", perfil: 1, pin: "", grupo: "", correo_cliente: "" });
   const [generatedDelivery, setGeneratedDelivery] = useState(null);
+  // Se conserva solamente durante la creación del pedido. Nunca se recupera
+  // ni se almacena en la base de datos la contraseña anterior del cliente.
+  const [newClientAccess, setNewClientAccess] = useState(null);
   const [renewalDelivery, setRenewalDelivery] = useState(null);
   const [generatedGuarantees, setGeneratedGuarantees] = useState([]);
   const [replacementForm, setReplacementForm] = useState({ old_inventory_id: "" });
@@ -1164,13 +1167,15 @@ const [profitEditValue, setProfitEditValue] = useState("");
       return;
     }
     await runAction(async () => {
-      await api("/api/admin/clientes", { method: "POST", body: JSON.stringify(clientForm) });
+      const result = await api("/api/admin/clientes", { method: "POST", body: JSON.stringify(clientForm) });
+      const created = result?.cliente;
+      if (!created?.id) throw new Error("El cliente se creó, pero no se recibió su identificador. Recarga antes de crear el pedido.");
+      // Contraseña temporal disponible únicamente para la primera entrega.
+      setNewClientAccess({ id: created.id, password: clientForm.password });
+      setSubForm((prev) => ({ ...prev, cliente_id: created.id }));
+      setDeliveryForm((prev) => ({ ...prev, cliente_id: created.id }));
+      setClientQuery(created.nombre || created.username || "");
       await refresh(token);
-      const created = (data.clientes || []).find((c) => normalizeText(c.nombre) === normalizeText(clientForm.nombre));
-      if (created) {
-        setSubForm((prev) => ({ ...prev, cliente_id: created.id }));
-        setClientQuery(created.nombre || created.username || "");
-      }
       setClientForm({ nombre: "", username: "", telefono: "", password: "" });
       setShowClientCreateInline(false);
     }, "Cliente creado correctamente.");
@@ -1550,7 +1555,8 @@ duracion_cantidad: selectedDeliveryService.duracion_cantidad
   asignacion: result.asignacion,
   suscripcion: result.suscripcion
 };
-      setGeneratedDelivery(generated);
+      setGeneratedDelivery(withOrderMessages(generated, selectedDeliveryClient));
+      setNewClientAccess(null);
       setDeliveryForm((prev) => ({ ...prev, servicio_id: "", cliente_id: "", inventario_id: "", cupo_numero: "", correo_cliente: "", fecha_inicio: todayISO() }));
       setSubForm({ cliente_id: "", servicio_id: "", fecha_inicio: todayISO() });
       setOrderSource("external");
@@ -1756,6 +1762,31 @@ duracion_cantidad: selectedDeliveryService.duracion_cantidad
     window.setTimeout(() => setCopyNotice(true), 10);
   }
 
+  function panelAccessMessage(cliente, passwordTemporal = "") {
+    const nombre = String(cliente?.nombre || "cliente").trim();
+    const username = String(cliente?.username || "").trim().replace(/^@+/, "");
+    const encabezado = `🎉 ¡Hola, ${nombre}! Qué gusto tenerte en JUAN CUENTAS 💙\n\n🔐 Tu acceso al panel de clientes:\n👤 Usuario: ${username}\n🌐 https://juancuentas.com/cliente`;
+    const ingreso = passwordTemporal
+      ? `\n🔑 Contraseña: ${passwordTemporal}\n\nGuarda estos datos de acceso en un lugar seguro.`
+      : "\n\nSi ya tienes contraseña, utiliza la misma de siempre. Si la olvidaste, solicita un restablecimiento de acceso.";
+    return `${encabezado}${ingreso}\n\n✨ Consulta tus servicios, vencimientos y promociones.\n🎁🏆 ¡Cada compra te acerca a un premio especial!\n\n💙 ¡Gracias por confiar en JUAN CUENTAS! 😁`;
+  }
+
+  function withOrderMessages(venta, cliente) {
+    const passwordTemporal = newClientAccess?.id === cliente?.id ? newClientAccess.password : "";
+    return {
+      ...venta,
+      cliente,
+      accessText: panelAccessMessage(cliente, passwordTemporal),
+      accessIsNew: Boolean(passwordTemporal)
+    };
+  }
+
+  function orderMessagesCombined(venta) {
+    if (!venta) return "";
+    return `📦 DATOS DEL PEDIDO\n\n${venta.text || ""}\n\n━━━━━━━━━━━━━━━━━━\n\n🔐 ACCESO AL PANEL\n\n${venta.accessText || ""}`;
+  }
+
   async function copyText(text, event) {
     if (!text) return;
     try {
@@ -1780,10 +1811,21 @@ duracion_cantidad: selectedDeliveryService.duracion_cantidad
     const errorFecha = errorFechaPedidoVencido(calculatedExpiry);
     if (errorFecha) { setError(errorFecha); return; }
     await runAction(async () => {
-      await api("/api/admin/suscripciones", {
+      const clientePedido = selectedClient;
+      const servicioPedido = selectedService;
+      const inicioPedido = subForm.fecha_inicio || todayISO();
+      const vencimientoPedido = calculatedExpiry;
+      const result = await api("/api/admin/suscripciones", {
         method: "POST",
-        body: JSON.stringify({ ...subForm, fecha_vencimiento: calculatedExpiry, ganancia_neta: Number(profitValue || 0), fecha_ganancia: subForm.fecha_inicio || todayISO() })
+        body: JSON.stringify({ ...subForm, fecha_vencimiento: calculatedExpiry, ganancia_neta: Number(profitValue || 0), fecha_ganancia: inicioPedido })
       });
+      setGeneratedDelivery(withOrderMessages({
+        text: `🎉 ¡Hola, ${clientePedido?.nombre || "cliente"}!\n\n🧾 Tu pedido ha sido registrado en JUAN CUENTAS.\n📺 Servicio: ${servicioPedido?.nombre || "Servicio"}\n📅 Inicio: ${formatDate(inicioPedido)}\n📅 Vencimiento: ${formatDate(vencimientoPedido)}\n\n🔐 Las credenciales de este servicio están pendientes de asignación. Te las enviaremos cuando estén listas.\n\nGracias por tu compra y confianza 😁`,
+        cliente: clientePedido,
+        servicio: servicioPedido,
+        suscripcion: result?.suscripcion
+      }, clientePedido));
+      setNewClientAccess(null);
       setSubForm({ cliente_id: "", servicio_id: "", fecha_inicio: todayISO() });
       setDeliveryForm((prev) => ({ ...prev, servicio_id: "", cliente_id: "", inventario_id: "", cupo_numero: "", correo_cliente: "", fecha_inicio: todayISO() }));
       setOrderSource("external");
@@ -1791,8 +1833,7 @@ duracion_cantidad: selectedDeliveryService.duracion_cantidad
       setProfitValue("");
       setClientQuery("");
       setServiceQuery("");
-      setGeneratedDelivery(null);
-    }, "Pedido agregado correctamente.");
+    }, "Pedido agregado correctamente. Se generaron los mensajes del pedido y del panel.");
   }
 
   async function createExternalOrder() {
@@ -1869,7 +1910,8 @@ duracion_cantidad: selectedDeliveryService.duracion_cantidad
         suscripcion: result.suscripcion
       };
 
-      setGeneratedDelivery(generated);
+      setGeneratedDelivery(withOrderMessages(generated, selectedClient));
+      setNewClientAccess(null);
       setSubForm({ cliente_id: "", servicio_id: "", fecha_inicio: todayISO() });
       setDeliveryForm({ servicio_id: "", cliente_id: "", inventario_id: "", cupo_numero: "", correo_cliente: "", fecha_inicio: todayISO() });
       setExternalOrderForm({ proveedor_id: "", correo: "", clave: "", perfil: 1, pin: "", grupo: "", correo_cliente: "" });
@@ -3415,23 +3457,41 @@ Cuenta para renovación
           </button>
 
           {generatedDelivery && !generatedDelivery.garantia && (
-            <div className="generatedDelivery">
+            <div className="generatedDelivery jcOrderMessages" style={{display:"grid",gap:14,minWidth:0}}>
               <div className="generatedHeader">
-                <div><strong>Mensaje generado</strong><span>Cuenta asignada</span></div>
-                <button type="button" className="generatedClose" aria-label="Cerrar mensaje" onClick={() => setGeneratedDelivery(null)}>×</button>
+                <div><strong>✅ Pedido guardado · 2 mensajes separados</strong><span>Envía el servicio y el acceso al panel por separado.</span></div>
+                <button type="button" className="generatedClose" aria-label="Cerrar mensajes" onClick={() => setGeneratedDelivery(null)}>×</button>
               </div>
-              <textarea readOnly value={generatedDelivery.text} />
-              <div className="inlineActions"><button type="button" className="miniButton primaryMini" onClick={(event) => copyText(generatedDelivery?.text, event)}>Copiar texto</button><button
-  type="button"
-  className="waTableButton"
-  onClick={async (event) => {
-    const copyPromise = copyText(generatedDelivery.text, event);
-    window.open(orderWhatsapp, "_blank");
-    await copyPromise;
-  }}
->
-  Enviar por WhatsApp
-</button></div>
+              <section className="jcOrderMessageCard">
+                <h3>📦 Mensaje 1 — Datos del pedido</h3>
+                <textarea readOnly value={generatedDelivery.text || ""} />
+                <div className="inlineActions">
+                  <button type="button" className="miniButton primaryMini" onClick={(event)=>copyText(generatedDelivery.text,event)}>📋 Copiar pedido</button>
+                  {orderWhatsapp && <button type="button" className="waTableButton" onClick={async(event)=>{
+                    const task=copyText(generatedDelivery.text,event);
+                    window.open(whatsappUrl(generatedDelivery.cliente.telefono,""),"_blank","noopener,noreferrer");
+                    await task;
+                  }}>💬 Abrir WhatsApp</button>}
+                </div>
+              </section>
+              <section className="jcOrderMessageCard">
+                <h3>🔐 Mensaje 2 — Acceso al panel</h3>
+                <p style={{fontSize:12,color:"#a9c9e8",margin:"4px 0 10px"}}>{generatedDelivery.accessIsNew
+                  ? "Cliente nuevo: incluye la contraseña que acabas de crear. Compártela por privado y cierra este mensaje al terminar."
+                  : "Cliente existente: conserva su contraseña actual; no la modificamos ni la mostramos."}</p>
+                <textarea readOnly value={generatedDelivery.accessText || ""}/>
+                <div className="inlineActions">
+                  <button type="button" className="miniButton primaryMini" onClick={(event)=>copyText(generatedDelivery.accessText,event)}>📋 Copiar acceso</button>
+                  {orderWhatsapp && <button type="button" className="waTableButton" onClick={async(event)=>{
+                    const task=copyText(generatedDelivery.accessText,event);
+                    window.open(whatsappUrl(generatedDelivery.cliente.telefono,""),"_blank","noopener,noreferrer");
+                    await task;
+                  }}>💬 Abrir WhatsApp</button>}
+                </div>
+              </section>
+              <div className="inlineActions">
+                <button type="button" className="miniButton" onClick={(event)=>copyText(orderMessagesCombined(generatedDelivery),event)}>📋 Copiar ambos mensajes</button>
+              </div>
             </div>
           )}
         </form>
@@ -5617,6 +5677,13 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
           grid-column: 1 / -1; width: 100%; min-height: 42px;
           margin-top: 4px; border-radius: 10px; font-size: 14px;
         }
+      `}</style>
+      <style>{`
+        .jcOrderMessageCard {padding:14px;border:1px solid #28557d;border-radius:12px;background:#071b31;min-width:0;}
+        .jcOrderMessageCard h3 {font-size:15px;margin:0 0 10px;color:#ecf7ff;}
+        .jcOrderMessageCard textarea {display:block;width:100%;min-height:155px;box-sizing:border-box;background:#061424;color:#eaf6ff;border:1px solid #2c547c;border-radius:9px;padding:12px;resize:vertical;line-height:1.5;}
+        .jcOrderMessageCard .inlineActions {display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;}
+        @media(max-width:600px){.jcOrderMessageCard{padding:10px;}.jcOrderMessageCard .inlineActions button{flex:1 1 130px;}}
       `}</style>
       {clientAccess && (
         <div role="presentation" style={{ position: "fixed", inset: 0, background: "rgba(0, 8, 20, .82)", zIndex: 1200, display: "grid", placeItems: "center", padding: 16 }} onClick={() => setClientAccess(null)}>
