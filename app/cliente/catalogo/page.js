@@ -11,7 +11,7 @@ const BRANDS = [
   [/emby/i, "Emby", "emby", "4caf50", "streaming"],
   [/prime\s*video|amazon\s*prime/i, "Prime Video", "primevideo", "18aee0", "streaming"],
   [/crunchy/i, "Crunchyroll", "crunchyroll", "ff8b21", "streaming"],
-  [/plex/i, "Plex", "plex", "edab31", "streaming"],
+  [/\bplex\b/i, "Plex", "plex", "edab31", "streaming"],
   [/^vix|\bvix\b/i, "ViX", "vix", "ff8b36", "streaming"],
   [/hbo|max\b/i, "HBO Max", "hbomax", "9b77ed", "streaming"],
   [/paramount/i, "Paramount+", "paramountplus", "5ca9fa", "streaming"],
@@ -41,6 +41,22 @@ const BRANDS = [
   [/spotify/i, "Spotify", "spotify", "40e67a", "musica"],
   [/deezer/i, "Deezer", "deezer", "ffac5c", "musica"]
 ];
+// Iconos reales de los sitios de las plataformas seleccionadas.
+// Se cargan al abrir el catálogo: no se necesitan APIs ni cambios en Supabase.
+// No confundir Perplexity (perplexity.ai) con Plex (plex.tv).
+const BRAND_DOMAINS = {
+  "Prime Video": "primevideo.com",
+  "Disney+": "disneyplus.com",
+  "Viki": "viki.com",
+  "Perplexity": "perplexity.ai",
+  "CapCut": "capcut.com",
+  "ChatGPT": "chatgpt.com",
+  "Muse AI": "muse.ai",
+  "Leonardo AI": "leonardo.ai",
+  "Canva": "canva.com",
+  "Photoshop": "adobe.com",
+  "Office 365": "microsoft365.com"
+};
 const WHATSAPP_VENTAS = "573137279240"; // Mismo número de soporte y promociones del panel de clientes.
 const GROUPS = [
   {key:"streaming",title:"Streaming y entretenimiento",icon:"▶"},
@@ -51,7 +67,7 @@ const GROUPS = [
 ];
 function brandFor(title) {
   const match = BRANDS.find(([regex]) => regex.test(title || ""));
-  return match ? {name:match[1],slug:match[2],color:match[3],group:match[4]} : {name:title || "Servicio",slug:"",color:"79cffa",group:"otros"};
+  return match ? {name:match[1],slug:match[2],color:match[3],group:match[4],domain:BRAND_DOMAINS[match[1]] || ""} : {name:title || "Servicio",slug:"",color:"79cffa",group:"otros",domain:""};
 }
 function enlaceInteres(item) {
   const detalle = [item.titulo, item.duracion, item.descripcion].map(x => String(x || "").trim()).filter(Boolean).join(" · ");
@@ -59,9 +75,17 @@ function enlaceInteres(item) {
   return `https://wa.me/${WHATSAPP_VENTAS}?text=${encodeURIComponent(mensaje)}`;
 }
 function BrandLogo({brand}) {
-  const [failed,setFailed] = useState(false);
+  // La fuente preferida es el icono usado por la propia web de la plataforma.
+  // Si falla, se intenta Simple Icons y finalmente se deja un símbolo neutro.
+  const [source,setSource] = useState(0);
+  const urls = [
+    ...(brand.domain ? [`https://www.google.com/s2/favicons?domain=${encodeURIComponent(brand.domain)}&sz=128`] : []),
+    ...(brand.slug ? [`https://cdn.simpleicons.org/${brand.slug}/${brand.color}`] : [])
+  ];
   return <span className="catalogBrand" style={{"--brand-color":`#${brand.color}`}}>
-    {brand.slug && !failed ? <img src={`https://cdn.simpleicons.org/${brand.slug}/${brand.color}`} alt="" loading="lazy" onError={()=>setFailed(true)}/> : <span className="catalogBrandFallback">◆</span>}
+    {source < urls.length ?
+      <img key={`${brand.name}-${source}`} src={urls[source]} alt="" loading="lazy" referrerPolicy="no-referrer" onError={()=>setSource(n=>n+1)}/> :
+      <span className="catalogBrandFallback">◆</span>}
     <b>{brand.name}</b>
   </span>;
 }
