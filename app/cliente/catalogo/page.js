@@ -104,6 +104,29 @@ export default function CatalogoCliente() {
   const [loading,setLoading] = useState(true);
   const [lastUpdated,setLastUpdated] = useState(null);
   const [search,setSearch] = useState("");
+  // Ocultar el regreso al panel a visitantes públicos; mostrarlo solo tras
+  // comprobar la sesión real de Supabase (sin exigir sesión para ver catálogo).
+  const [panelPath,setPanelPath] = useState("");
+  useEffect(()=>{
+    let mounted=true;
+    const checkSession=async()=>{
+      try {
+        const {data:{user},error}=await supabase.auth.getUser();
+        if (!mounted) return;
+        if (error || !user) {setPanelPath("");return;}
+        // Los administradores vuelven a /admin; los clientes a /cliente.
+        const {data:adminData}=await supabase.from("admins")
+          .select("auth_user_id").eq("auth_user_id",user.id).maybeSingle();
+        if (mounted) setPanelPath(adminData ? "/admin" : "/cliente");
+      } catch {if(mounted)setPanelPath("");}
+    };
+    checkSession();
+    const {data:{subscription}}=supabase.auth.onAuthStateChange((event)=>{
+      if (event === "SIGNED_OUT") setPanelPath("");
+      else if(event === "SIGNED_IN") { void checkSession(); }
+    });
+    return ()=>{mounted=false;subscription.unsubscribe();};
+  },[]);
   const filteredItems = useMemo(()=>{
     const query=search.trim().normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase();
     if(!query) return items;
@@ -114,12 +137,8 @@ export default function CatalogoCliente() {
     let active=true;
     const loadCatalog = async()=>{
       try {
-        const {data:session,error:sessionError}=await supabase.auth.getSession();
-        if (sessionError || !session?.session?.access_token) {router.replace("/login");return;}
-        const headers={Authorization:`Bearer ${session.session.access_token}`};
-        let response=await fetch("/api/cliente/catalogo",{headers,cache:"no-store"});
-        // La vista previa también funciona para el administrador, no solo para clientes.
-        if(response.status===403) response=await fetch("/api/admin/catalogo",{headers,cache:"no-store"});
+        // Catálogo público: no requiere iniciar sesión ni envía credenciales.
+        const response=await fetch("/api/cliente/catalogo",{cache:"no-store"});
         const payload=await response.json();
         if(!response.ok) throw new Error(payload.error || "No se pudo cargar el catálogo.");
         if(active) {
@@ -146,7 +165,7 @@ export default function CatalogoCliente() {
     </header>
     <nav className="jcCatalogActions">
       <button type="button" onClick={async()=>{try{await navigator.clipboard.writeText(window.location.href);alert("Enlace del catálogo copiado. Compártelo con tus clientes.");}catch{window.prompt("Copia el enlace del catálogo:",window.location.href);}}}>🔗 Copiar enlace del catálogo</button>
-      <button type="button" onClick={()=>router.push("/cliente")}>← Volver al panel</button>
+      {panelPath && <button type="button" onClick={()=>router.push(panelPath)}>← Volver al panel</button>}
     </nav>
     <p className="jcCatalogOnlineInfo">🌐 Catálogo en línea · Los precios se actualizan al abrir o volver a esta página. {lastUpdated ? `Actualizado: ${lastUpdated.toLocaleTimeString("es-CO",{hour:"2-digit",minute:"2-digit"})}` : ""}</p>
     <div className="jcCatalogSearchBar">
