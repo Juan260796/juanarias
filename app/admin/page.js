@@ -1227,6 +1227,25 @@ const [profitEditValue, setProfitEditValue] = useState("");
     if (editingClientId === cliente.id) setEditingClientId("");
   }
 
+  async function openInventorySheets() {
+    setError("");
+    // Abrimos la pestaña de inmediato para que el navegador no bloquee la ventana.
+    const tab = window.open("", "_blank");
+    try {
+      const info = await api("/api/admin/inventario-sheets");
+      if (!info.url) throw new Error("Falta configurar INVENTORY_SHEETS_DOCUMENT_URL en Vercel.");
+      if (tab) {
+        tab.opener = null;
+        tab.location.href = info.url;
+      } else {
+        window.location.assign(info.url);
+      }
+    } catch (err) {
+      if (tab) tab.close();
+      setError(err.message || "No se pudo abrir Google Sheets.");
+    }
+  }
+
   async function syncGoogleBackup() {
     setWorking(true);
     setError("");
@@ -5211,6 +5230,10 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
           <p className="muted">Operación</p>
           <h1>Inventario y cuentas Streaming</h1>
           <p className="pageLead">Organiza cada tarea por separado: proveedores, añadir cuentas, stock y garantías. La entrega al cliente ahora se hace desde Generar nuevo pedido.</p>
+          <div style={{marginTop: "12px", display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap"}}>
+            <button type="button" className="button primary" onClick={openInventorySheets}>📊 Abrir Google Sheets (cuentas de 2+ meses)</button>
+            <span className="muted" style={{fontSize: "12px"}}>La hoja se actualiza automáticamente cada 5 minutos. Los pedidos y ganancias se siguen gestionando aquí.</span>
+          </div>
         </div>
 
         <div className="inventorySubtabs" role="tablist" aria-label="Secciones de inventario">
