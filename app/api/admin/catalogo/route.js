@@ -1,6 +1,6 @@
 import { requireAdmin } from "../../../../lib/supabase-server";
 
-const fields = "id,titulo,descripcion,precio,duracion,orden,activo,created_at";
+const fields = "id,titulo,descripcion,precio,duracion,orden,activo,categoria,created_at";
 function clean(body) {
   return {
     titulo: String(body.titulo || "").trim().slice(0, 120),
@@ -9,6 +9,7 @@ function clean(body) {
     duracion: String(body.duracion || "").trim().slice(0, 80),
     orden: Number.isFinite(Number(body.orden)) ? Math.trunc(Number(body.orden)) : 0,
     activo: body.activo !== false,
+    categoria: ["streaming", "ia", "educacion", "musica", "otros"].includes(body.categoria) ? body.categoria : "otros",
     updated_at: new Date().toISOString()
   };
 }

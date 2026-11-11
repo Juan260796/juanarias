@@ -246,6 +246,26 @@ function NavIcon({ name }) {
   return <span className="navIcon" aria-hidden="true"><svg viewBox="0 0 24 24">{paths[name]}</svg></span>;
 }
 
+const CATALOG_CATEGORIES = [
+  { key: "streaming", title: "Streaming y entretenimiento", icon: "▶" },
+  { key: "ia", title: "IA, diseño y productividad", icon: "✦" },
+  { key: "educacion", title: "Educación, lectura y herramientas", icon: "▤" },
+  { key: "musica", title: "Música", icon: "♫" },
+  { key: "otros", title: "Otros servicios", icon: "✧" },
+];
+function inferCatalogCategory(title) {
+  const text = String(title || "").toLowerCase();
+  if (/spotify|deezer/.test(text)) return "musica";
+  if (/scrib|slide.?share|audible|coursera|duolingo/.test(text)) return "educacion";
+  if (/capcut|chat\s*gpt|openai|gemini|muse|perplexity|leonardo|canva|adobe|photoshop|office|microsoft\s*365|autodesk|vpn/.test(text)) return "ia";
+  if (/netflix|directv|emby|prime\s*video|amazon\s*prime|crunchy|plex|vix|hbo|\bmax\b|paramount|disney|apple\s*tv|viki|mubi|youtube|flujo/.test(text)) return "streaming";
+  return "otros";
+}
+function catalogItemCategory(item) {
+  return CATALOG_CATEGORIES.some(category => category.key === item?.categoria)
+    ? item.categoria : inferCatalogCategory(item?.titulo);
+}
+
 const VIEW_TITLES = {
   pedido: "Generar nuevo pedido",
   activas: "Cuentas activas",
@@ -450,6 +470,8 @@ const [profitEditValue, setProfitEditValue] = useState("");
   const [editingPromotionId, setEditingPromotionId] = useState("");
   const [promotionTab, setPromotionTab] = useState("promociones");
   const [promotionSearch, setPromotionSearch] = useState("");
+  const [reactivatePromotionId, setReactivatePromotionId] = useState("");
+  const [reactivatePromotionDays, setReactivatePromotionDays] = useState("1");
   const [providerForm, setProviderForm] = useState({ iniciales: "" });
   const [inventoryTab, setInventoryTab] = useState("proveedores");
   const [inventoryServiceQuery, setInventoryServiceQuery] = useState("");
@@ -482,7 +504,8 @@ const [profitEditValue, setProfitEditValue] = useState("");
   const [catalogEditId, setCatalogEditId] = useState("");
   const [catalogSearch, setCatalogSearch] = useState("");
   const [catalogFilter, setCatalogFilter] = useState("todos");
-  const [catalogForm, setCatalogForm] = useState({ titulo: "", descripcion: "", duracion: "", precio: "", orden: 0, activo: true });
+  const [catalogCategoryFilter, setCatalogCategoryFilter] = useState("todas");
+  const [catalogForm, setCatalogForm] = useState({ titulo: "", descripcion: "", duracion: "", precio: "", orden: 0, activo: true, categoria: "otros" });
   const [deviceRecords, setDeviceRecords] = useState([]);
   const [deviceSearch, setDeviceSearch] = useState("");
   const [deviceOnlyPending, setDeviceOnlyPending] = useState(false);
@@ -1292,6 +1315,26 @@ const [profitEditValue, setProfitEditValue] = useState("");
       }),
       promotionVisibleInAdmin(promo) ? "Promoción oculta." : "Promoción activada."
     );
+  }
+
+  async function reactivatePromotion(promo) {
+    const days = Number(reactivatePromotionDays);
+    if (!Number.isSafeInteger(days) || days < 1 || days > 36500) {
+      setError("Escribe una cantidad válida de días (mínimo 1).");
+      return;
+    }
+    // Día 1 es hoy; la fecha final es inclusiva.
+    const start = todayISO();
+    const end = new Date(parseISO(start));
+    end.setDate(end.getDate() + days - 1);
+    await runAction(async () => {
+      await api("/api/admin/promociones", {
+        method: "PATCH",
+        body: JSON.stringify({ ...promo, fecha_inicio: start, fecha_fin: toISO(end), activo: true })
+      });
+      setReactivatePromotionId("");
+      setReactivatePromotionDays("1");
+    }, `Promoción activada durante ${days} día${days === 1 ? "" : "s"}.`);
   }
 
   async function deletePromotion(promo) {
@@ -4705,6 +4748,7 @@ async function saveProfitEdit(item) {
       const text = `${item.titulo || ""} ${item.duracion || ""} ${item.descripcion || ""} ${item.precio || ""}`.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
       const query = catalogSearch.trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
       if (query && !text.includes(query)) return false;
+      if (catalogCategoryFilter !== "todas" && catalogItemCategory(item) !== catalogCategoryFilter) return false;
       if (catalogFilter === "publicados") return item.activo && withPrice(item.precio);
       if (catalogFilter === "ocultos") return !item.activo;
       if (catalogFilter === "sinprecio") return !withPrice(item.precio);
@@ -4715,21 +4759,38 @@ async function saveProfitEdit(item) {
       await runAction(async () => {
         await api("/api/admin/catalogo", { method: catalogEditId ? "PATCH" : "POST", body: JSON.stringify({ ...catalogForm, ...(catalogEditId ? { id: catalogEditId } : {}) }) });
         setCatalogEditId("");
-        setCatalogForm({ titulo: "", descripcion: "", duracion: "", precio: "", orden: 0, activo: true });
+        setCatalogForm({ titulo: "", descripcion: "", duracion: "", precio: "", orden: 0, activo: true, categoria: "otros" });
         await refresh();
       }, catalogEditId ? "Producto del catálogo actualizado." : "Producto añadido al catálogo.");
+    };
+    const toggleCatalogVisibility = async (item) => {
+      await runAction(async () => {
+        await api("/api/admin/catalogo", {
+          method: "PATCH",
+          body: JSON.stringify({ ...item, categoria: catalogItemCategory(item), activo: !item.activo })
+        });
+        // Si se está editando el mismo producto, actualizar el estado del formulario.
+        if (catalogEditId === item.id) setCatalogForm(previous => ({ ...previous, activo: !item.activo }));
+        await refresh();
+      }, item.activo ? "Servicio oculto del catálogo en línea." : "Servicio activado para el catálogo en línea.");
     };
     return <>
       <div className="pageHeading"><p className="muted">CATÁLOGO</p><h1>Catálogo para clientes</h1><p className="pageLead">Edita servicios, precios y descripciones. Los servicios sin precio, con «Consultar» o con precio $0 no aparecerán en el catálogo de clientes ni en el PDF, pero seguirán aquí para editarlos.</p><div className="inlineActions" style={{marginTop:12}}><a className="miniButton primaryMini" href="/cliente/catalogo" target="_blank" rel="noreferrer">🌐 Ver catálogo actualizado en línea</a></div></div>
       <form className="card adminForm standaloneForm" onSubmit={save}>
         <label>Nombre del servicio<input value={catalogForm.titulo} required maxLength={120} onChange={e => setCatalogForm({...catalogForm,titulo:e.target.value})}/></label>
+        <label>Categoría del servicio
+          <select value={catalogForm.categoria} onChange={e => setCatalogForm({...catalogForm,categoria:e.target.value})} style={{width:"100%",height:44,background:"#061a34",color:"#eff9ff",border:"1px solid #2875b4",borderRadius:11,padding:"0 12px",colorScheme:"dark"}}>
+            {CATALOG_CATEGORIES.map(category => <option key={category.key} value={category.key}>{category.title}</option>)}
+          </select>
+          <small style={{display:"block",marginTop:5,color:"#9acdea"}}>Al guardar, el servicio aparecerá en esta categoría del catálogo público.</small>
+        </label>
         <label>Duración o plan<input value={catalogForm.duracion} placeholder="Ej. 1 mes" onChange={e => setCatalogForm({...catalogForm,duracion:e.target.value})}/></label>
         <label>Precio a mostrar (opcional; sin precio no se publica)<input value={catalogForm.precio} placeholder="Ej. $12.000" onChange={e => setCatalogForm({...catalogForm,precio:e.target.value})}/></label>
         <label>Descripción<textarea value={catalogForm.descripcion} rows={3} onChange={e => setCatalogForm({...catalogForm,descripcion:e.target.value})}/></label>
         <label>Orden de aparición<input type="number" value={catalogForm.orden} onChange={e => setCatalogForm({...catalogForm,orden:Number(e.target.value)})}/></label>
         <label className="toggleLine"><input type="checkbox" checked={catalogForm.activo} onChange={e => setCatalogForm({...catalogForm,activo:e.target.checked})}/> Visible para clientes</label>
         <div className="inlineActions"><button className="miniButton primaryMini" disabled={working}>{catalogEditId ? "Guardar cambios" : "Agregar al catálogo"}</button>
-          {catalogEditId && <button type="button" className="miniButton" onClick={() => {setCatalogEditId("");setCatalogForm({ titulo:"",descripcion:"",duracion:"",precio:"",orden:0,activo:true });}}>Cancelar</button>}
+          {catalogEditId && <button type="button" className="miniButton" onClick={() => {setCatalogEditId("");setCatalogForm({ titulo:"",descripcion:"",duracion:"",precio:"",orden:0,activo:true,categoria:"otros" });}}>Cancelar</button>}
         </div>
       </form>
       <h2 style={{marginTop:24}}>Servicios del catálogo ({visibleCatalogItems.length} de {catalogItems.length})</h2>
@@ -4747,16 +4808,32 @@ async function saveProfitEdit(item) {
             <option value="ocultos">Ocultos manualmente</option>
           </select>
         </label>
-        {(catalogSearch || catalogFilter !== "todos") && <button type="button" className="miniButton" style={{height:44,background:"#103a69",border:"1px solid #3382bd",color:"#e4f6ff",borderRadius:11,padding:"0 16px"}} onClick={()=>{setCatalogSearch("");setCatalogFilter("todos");}}>✕ Limpiar</button>}
+        <label style={{display:"flex",flexDirection:"column",gap:8,flex:"1 1 220px",minWidth:0,margin:0,color:"#b9dfff",fontSize:13,fontWeight:700}}>
+          <span>Filtrar por categoría</span>
+          <select value={catalogCategoryFilter} onChange={e=>setCatalogCategoryFilter(e.target.value)} style={{boxSizing:"border-box",width:"100%",height:44,padding:"0 12px",borderRadius:11,border:"1px solid #2875b4",background:"#061a34",color:"#eff9ff",colorScheme:"dark",fontSize:14,boxShadow:"none",cursor:"pointer"}}>
+            <option value="todas">Todas las categorías</option>
+            {CATALOG_CATEGORIES.map(category=><option key={category.key} value={category.key}>{category.title}</option>)}
+          </select>
+        </label>
+        {(catalogSearch || catalogFilter !== "todos" || catalogCategoryFilter !== "todas") && <button type="button" className="miniButton" style={{height:44,background:"#103a69",border:"1px solid #3382bd",color:"#e4f6ff",borderRadius:11,padding:"0 16px"}} onClick={()=>{setCatalogSearch("");setCatalogFilter("todos");setCatalogCategoryFilter("todas");}}>✕ Limpiar</button>}
       </div>
       {!visibleCatalogItems.length && <div className="card emptyState">No hay servicios que coincidan con la búsqueda.</div>}
-      <div className="jcToolCards">{visibleCatalogItems.map(item => <article className="card jcToolCard" key={item.id}>
+      <div style={{display:"grid",gap:12}}>
+        {CATALOG_CATEGORIES.map(category => {
+          const categoryItems = visibleCatalogItems.filter(item => catalogItemCategory(item) === category.key);
+          if (!categoryItems.length) return null;
+          return <details key={category.key} open={undefined} style={{border:"1px solid #245c91",borderRadius:15,background:"linear-gradient(125deg,#0a2341,#07182e)",padding:"9px 12px"}}>
+            <summary style={{cursor:"pointer",padding:"10px 6px",color:"#e5f7ff",fontWeight:800,fontSize:16}}>{category.icon} {category.title} <span style={{color:"#79cfff",fontSize:13,fontWeight:600}}>({categoryItems.length})</span></summary>
+      <div className="jcToolCards">{categoryItems.map(item => <article className="card jcToolCard" key={item.id}>
         <strong>{item.titulo}</strong> <small>{!item.activo ? "Oculto" : (!String(item.precio || "").trim() || /^(consultar|sin precio|pendiente|por definir|n\/?a|gratis|no disponible)$/i.test(String(item.precio).trim()) || !/\d/.test(String(item.precio)) || !String(item.precio).match(/\d+/g)?.some(n => Number(n) > 0) ? "Sin precio · no publicado" : "Visible")} · {item.duracion || "Sin duración"}</small>
         {item.descripcion && <p>{item.descripcion}</p>}{item.precio && <b>{item.precio}</b>}
-        <div className="inlineActions"><button className="miniButton" type="button" onClick={() => { setCatalogEditId(item.id); setCatalogForm({titulo:item.titulo,descripcion:item.descripcion || "",duracion:item.duracion || "",precio:item.precio || "",orden:item.orden || 0,activo:item.activo}); window.scrollTo({top:0,behavior:"smooth"}); }}>Editar</button>
+        <div className="inlineActions"><button className={`miniButton ${item.activo ? "warningMini" : "primaryMini"}`} type="button" disabled={working} onClick={() => toggleCatalogVisibility(item)}>{item.activo ? "🙈 Ocultar" : "👁️ Mostrar"}</button><button className="miniButton" type="button" onClick={() => { setCatalogEditId(item.id); setCatalogForm({titulo:item.titulo,descripcion:item.descripcion || "",duracion:item.duracion || "",precio:item.precio || "",orden:item.orden || 0,activo:item.activo,categoria:catalogItemCategory(item)}); window.scrollTo({top:0,behavior:"smooth"}); }}>Editar</button>
           <button className="miniButton dangerMini" type="button" onClick={() => { if(!window.confirm(`¿Eliminar ${item.titulo} del catálogo?`)) return;runAction(async()=>{await api("/api/admin/catalogo",{method:"DELETE",body:JSON.stringify({id:item.id})}); await refresh();},"Producto eliminado del catálogo."); }}>Borrar</button>
         </div>
       </article>)}</div>
+          </details>;
+        })}
+      </div>
     </>;
   }
 
@@ -4903,9 +4980,29 @@ async function saveProfitEdit(item) {
                       <div className="inlineActions">
                         <span className={promotionVisibleInAdmin(promo) ? "status ok" : "status suspendedStatus"}>{promotionVisibleInAdmin(promo) ? "Visible" : "Oculta"}</span>
                         <button type="button" className="miniButton primaryMini" onClick={() => beginPromotionEdit(promo)}>✏️ Editar</button>
-                        <button type="button" className="miniButton" disabled={promotionExpired(promo)} title={promotionExpired(promo) ? "Venció: edita las fechas para volver a activarla" : ""} onClick={() => togglePromotion(promo)}>{promotionExpired(promo) ? "Vencida" : promotionVisibleInAdmin(promo) ? "Ocultar" : "Activar"}</button>
+                        <button type="button" className="miniButton" disabled={working} onClick={() => {
+                          if (promotionExpired(promo)) {
+                            setReactivatePromotionId(String(promo.id));
+                            setReactivatePromotionDays("1");
+                          } else {
+                            togglePromotion(promo);
+                          }
+                        }}>{promotionVisibleInAdmin(promo) ? "Ocultar" : "Activar"}</button>
                         <button type="button" className="miniButton dangerMini" onClick={() => beginDeleteSelection("promociones", promo.id)}>Borrar</button>
                       </div>
+                      {reactivatePromotionId === String(promo.id) && (
+                        <form onSubmit={e => { e.preventDefault();reactivatePromotion(promo); }} style={{marginTop:12,padding:13,border:"1px solid #2875b4",borderRadius:12,background:"#071b35",display:"grid",gap:9}}>
+                          <label style={{display:"grid",gap:6,fontSize:13,color:"#bfddf8",fontWeight:700}}>
+                            📅 ¿Por cuántos días quieres activar esta promoción?
+                            <input type="number" min="1" max="36500" step="1" required value={reactivatePromotionDays} onChange={e => setReactivatePromotionDays(e.target.value)} style={{height:41,boxSizing:"border-box",width:"100%",borderRadius:9,border:"1px solid #3488c6",background:"#06162a",color:"#effaff",padding:"0 12px",fontSize:15}} />
+                          </label>
+                          <small style={{color:"#a6cbea"}}>Se activa desde hoy. El último día también estará visible.</small>
+                          <div className="inlineActions">
+                            <button type="submit" className="miniButton primaryMini" disabled={working}>✅ Confirmar activación</button>
+                            <button type="button" className="miniButton" onClick={() => setReactivatePromotionId("")}>Cancelar</button>
+                          </div>
+                        </form>
+                      )}
                     </article>
                   ))}
                 </div>

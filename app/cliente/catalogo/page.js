@@ -132,7 +132,7 @@ export default function CatalogoCliente() {
     if(!query) return items;
     return items.filter(item=>[item.titulo,item.duracion,item.descripcion,brandFor(item.titulo).name].some(value=>String(value||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase().includes(query)));
   },[items,search]);
-  const grouped = useMemo(()=>GROUPS.map(group=>({...group, items:filteredItems.filter(item=>brandFor(item.titulo).group===group.key)})).filter(group=>group.items.length),[filteredItems]);
+  const grouped = useMemo(()=>GROUPS.map(group=>({...group, items:filteredItems.filter(item=>(GROUPS.some(group=>group.key===item.categoria) ? item.categoria : brandFor(item.titulo).group)===group.key)})).filter(group=>group.items.length),[filteredItems]);
   useEffect(()=>{
     let active=true;
     const loadCatalog = async()=>{

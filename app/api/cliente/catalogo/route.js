@@ -1,7 +1,7 @@
 import { createAdminSupabase } from "../../../../lib/supabase-server";
 
 // Catálogo público: devolver solo campos comerciales, nunca datos privados.
-const FIELDS = "id,titulo,descripcion,precio,duracion,orden";
+const FIELDS = "id,titulo,descripcion,precio,duracion,orden,categoria";
 const PAGE_SIZE = 200;
 const HEADERS = { "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache" };
 
