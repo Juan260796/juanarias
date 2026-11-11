@@ -449,6 +449,7 @@ const [profitEditValue, setProfitEditValue] = useState("");
   const [promoForm, setPromoForm] = useState({ titulo: "", descripcion: "", precio: "", fecha_inicio: todayISO(), fecha_fin: todayISO(), activo: true });
   const [editingPromotionId, setEditingPromotionId] = useState("");
   const [promotionTab, setPromotionTab] = useState("promociones");
+  const [promotionSearch, setPromotionSearch] = useState("");
   const [providerForm, setProviderForm] = useState({ iniciales: "" });
   const [inventoryTab, setInventoryTab] = useState("proveedores");
   const [inventoryServiceQuery, setInventoryServiceQuery] = useState("");
@@ -1765,11 +1766,10 @@ duracion_cantidad: selectedDeliveryService.duracion_cantidad
   function panelAccessMessage(cliente, passwordTemporal = "") {
     const nombre = String(cliente?.nombre || "cliente").trim();
     const username = String(cliente?.username || "").trim().replace(/^@+/, "");
-    const encabezado = `🎉 ¡Hola, ${nombre}! Qué gusto tenerte en JUAN CUENTAS 💙\n\n🔐 Tu acceso al panel de clientes:\n👤 Usuario: ${username}\n🌐 https://juancuentas.com/cliente`;
     const ingreso = passwordTemporal
-      ? `\n🔑 Contraseña: ${passwordTemporal}\n\nGuarda estos datos de acceso en un lugar seguro.`
-      : "\n\nSi ya tienes contraseña, utiliza la misma de siempre. Si la olvidaste, solicita un restablecimiento de acceso.";
-    return `${encabezado}${ingreso}\n\n✨ Consulta tus servicios, vencimientos y promociones.\n🎁🏆 ¡Cada compra te acerca a un premio especial!\n\n💙 ¡Gracias por confiar en JUAN CUENTAS! 😁`;
+      ? `🔑 Contraseña: ${passwordTemporal}`
+      : "🔑 (La contraseña es el mismo usuario)";
+    return `🎉 ¡Hola, ${nombre}! Qué gusto tenerte en JUAN CUENTAS 💙\n\n🔐 Tu acceso al panel de clientes:\n👤 Usuario: ${username}\n${ingreso}\n🌐 https://juancuentas.com/cliente\n\n✨ Consulta tus servicios, vencimientos y promociones.\n🛍️ Catálogo actualizado: https://juancuentas.com/cliente/catalogo\n🎁🏆 ¡Cada compra te acerca a un premio especial!\n\n💙 ¡Gracias por confiar en JUAN CUENTAS! 😁`;
   }
 
   function withOrderMessages(venta, cliente) {
@@ -2500,6 +2500,7 @@ if (cambiarCuenta && (!nuevoInventarioId || !nuevoCupo)) {
         body: JSON.stringify({ id: cliente.id, nombre: cliente.nombre, username: cliente.username, telefono: cliente.telefono, password })
       });
       const text = `🎉 ¡Hola, ${cliente.nombre}! Qué gusto tenerte en JUAN CUENTAS 💙\n\n🔐 Tu acceso al panel de clientes:\n👤 Usuario: ${String(cliente.username || "").trim().replace(/^@+/, "")}\n🔑 Contraseña: ${password}\n🌐 Ingresa aquí: https://juancuentas.com/cliente\n\n✨ Consulta tus servicios y promociones cuando quieras.
+🛍️ Mira nuestro catálogo actualizado: https://juancuentas.com/cliente/catalogo
 
 🎁🏆 ¡Cada compra te acerca a un premio especial!
 
@@ -4834,6 +4835,10 @@ async function saveProfitEdit(item) {
   }
 
   function renderPromociones() {
+    const filteredPromotions = (data.promociones || []).filter((promo) =>
+      String(promo.titulo || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
+        .includes(promotionSearch.trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase())
+    );
     const rewardClient = (reward) => Array.isArray(reward.clientes) ? reward.clientes[0] : reward.clientes;
 
     return (
@@ -4869,13 +4874,22 @@ async function saveProfitEdit(item) {
             </form>
 
             <section className="promoAdminList">
-              <div className="sectionTitleRow"><h2>Promociones guardadas</h2><span>{todayPromotions.length} visibles hoy</span></div>
-              {bulkDeleteBar("promociones", (data.promociones || []).map((promo) => promo.id), "/api/admin/promociones", "promoción")}
+              <div className="sectionTitleRow"><h2>Promociones guardadas ({filteredPromotions.length} de {(data.promociones || []).length})</h2><span>{todayPromotions.length} visibles hoy</span></div>
+              <div className="card" style={{padding:14,marginBottom:14,background:"linear-gradient(120deg,#0b2545,#07182f)",border:"1px solid #23629b",borderRadius:16}}>
+                <label style={{display:"flex",flexDirection:"column",gap:8,margin:0,color:"#b9dfff",fontSize:13,fontWeight:700}}>
+                  <span>🔎 Buscar promoción por nombre</span>
+                  <input type="search" value={promotionSearch} onChange={(e)=>setPromotionSearch(e.target.value)} placeholder="Ej. Promo única, Netflix, Black Friday..." style={{boxSizing:"border-box",width:"100%",height:44,padding:"0 14px",borderRadius:11,border:"1px solid #2875b4",background:"#061a34",color:"#eff9ff",outlineColor:"#39b8ff",fontSize:14}} />
+                </label>
+                {promotionSearch && <button type="button" className="miniButton" style={{marginTop:10,background:"#103a69",border:"1px solid #3382bd",color:"#e4f6ff"}} onClick={()=>setPromotionSearch("")}>✕ Limpiar búsqueda</button>}
+              </div>
+              {bulkDeleteBar("promociones", filteredPromotions.map((promo) => promo.id), "/api/admin/promociones", "promoción")}
               {(data.promociones || []).length === 0 ? (
                 <div className="card emptyState">Aún no has creado promociones.</div>
+              ) : filteredPromotions.length === 0 ? (
+                <div className="card emptyState">No se encontraron promociones con ese nombre.</div>
               ) : (
                 <div className="promoAdminGrid">
-                  {(data.promociones || []).map((promo) => (
+                  {filteredPromotions.map((promo) => (
                     <article className={`card promoAdminCard ${promotionIsToday(promo) ? "today" : ""}`} key={promo.id}>
                       {deleteMode["promociones"] && (
                       <label className="cardSelectCheck"><input type="checkbox" checked={selectedDeleteIds("promociones").includes(promo.id)} onChange={() => toggleDeleteSelection("promociones", promo.id)} /> Seleccionar</label>
