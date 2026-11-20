@@ -1715,7 +1715,7 @@ duracion_cantidad: selectedDeliveryService.duracion_cantidad
 
   async function guardarGarantiaPedido(sub, asignacion) {
     const form = pedidoGarantiaForm;
-    if (String(form.motivo || "").trim().length < 5) { setError("Escribe un motivo de al menos 5 caracteres."); return; }
+    
     const dias = Number(form.dias_compensacion);
     if (!Number.isInteger(dias) || dias < 0 || dias > 90) { setError("Selecciona entre 0 y 90 días de compensación."); return; }
     if (!form.cupo_numero || Number(form.cupo_numero) < 1) { setError("Selecciona el cupo de destino."); return; }
@@ -1725,7 +1725,7 @@ duracion_cantidad: selectedDeliveryService.duracion_cantidad
     try {
       const payload = {
         asignacion_id: asignacion.id, inventario_destino_id: form.inventario_destino_id,
-        cupo_numero: Number(form.cupo_numero), motivo: form.motivo,
+        cupo_numero: Number(form.cupo_numero), motivo: "Reemplazo por garantía",
         dias_compensacion: dias, correo_cliente: form.correo_cliente,
         modo_externo: form.modo_externo,
         externo: { proveedor_id: form.proveedor_id, correo: form.correo, clave: form.clave,
@@ -1757,102 +1757,78 @@ duracion_cantidad: selectedDeliveryService.duracion_cantidad
       !(data.asignaciones||[]).some(a=>a.activo && a.id!==asignacion.id && a.inventario_id===actual.id && Number(a.cupo_numero)===n)
       && !(actual.id===asignacion.inventario_id && n===Number(asignacion.cupo_numero))) : [];
     const update = (field, value) => setPedidoGarantiaForm(prev=>({...prev,[field]:value}));
-    const fieldStyle = {display:"flex",flexDirection:"column",gap:8,minWidth:0,width:"100%",fontWeight:600,color:"#b7d6f1",fontSize:13};
-    const controlStyle = {width:"100%",minWidth:0,maxWidth:"100%",boxSizing:"border-box",background:"#06172c",color:"#f2f8ff",border:"1px solid #3077b1",borderRadius:10,padding:"11px 13px",minHeight:44,fontSize:14,fontWeight:400,outlineOffset:2};
-    const gridStyle = {display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(min(100%, 270px), 1fr))",gap:16,alignItems:"start",width:"100%"};
-    const sectionStyle = {background:"#091b32",border:"1px solid #1d456c",borderRadius:13,padding:16,display:"flex",flexDirection:"column",gap:15,minWidth:0};
-    const titleStyle = {margin:0,color:"#e8f6ff",fontWeight:700,fontSize:14};
-    return <div className="card" style={{background:"#071d35",border:"1px solid #2580c1",padding:"clamp(15px, 2.5vw, 24px)",margin:"14px 0",borderRadius:16,maxWidth:"100%",boxSizing:"border-box"}}>
-      <div style={{display:"flex",alignItems:"flex-start",gap:12,flexWrap:"wrap",marginBottom:20}}>
-        <div style={{width:40,height:40,background:"#0b3c69",border:"1px solid #287fb9",borderRadius:12,display:"grid",placeItems:"center",flexShrink:0,fontSize:20}}>🔄</div>
-        <div style={{flex:"1 1 220px",minWidth:0}}>
-          <h3 style={{margin:"0 0 6px",fontSize:19,color:"#f3f9ff"}}>Reemplazar cuenta o perfil · Garantía</h3>
-          <div style={{color:"#a8c8e2",fontSize:13,lineHeight:1.6}}>
-            <strong style={{color:"#e5f3ff"}}>{sub.cliente?.nombre || "Cliente"}</strong> · {sub.servicio?.nombre || "Servicio"}
-          </div>
-          <div style={{color:"#91c8ee",fontSize:12,marginTop:3}}>El pedido y su ganancia se conservan. Puedes compensar hasta 90 días sin crear otra venta.</div>
+    const fieldStyle = {display:"flex",flexDirection:"column",gap:5,minWidth:0,fontWeight:600,color:"#b7d6f1",fontSize:12};
+    const controlStyle = {display:"block",width:"100%",minWidth:0,maxWidth:"100%",boxSizing:"border-box",background:"#06172c",color:"#f2f8ff",border:"1px solid #3077b1",borderRadius:9,padding:"8px 10px",height:36,fontSize:13,fontWeight:400};
+    const gridStyle = {display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(min(100%,215px),1fr))",gap:"8px 10px",alignItems:"end",minWidth:0};
+    return <div className="card" style={{background:"#071d35",border:"1px solid #2580c1",borderRadius:12,padding:12,margin:"10px 0",width:"100%",maxWidth:620,minWidth:0,boxSizing:"border-box",overflow:"hidden",justifySelf:"start"}}>
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:9,minWidth:0}}>
+        <span style={{fontSize:18}}>🔄</span>
+        <div style={{minWidth:0}}>
+          <strong style={{fontSize:15,color:"#f3f9ff"}}>Reemplazar cuenta o perfil</strong>
+          <div style={{fontSize:12,color:"#9bc5e3",overflowWrap:"anywhere"}}>{sub.cliente?.nombre || "Cliente"} · {sub.servicio?.nombre || "Servicio"}</div>
         </div>
       </div>
-
-      <div style={{display:"flex",flexDirection:"column",gap:16}}>
-        <section style={sectionStyle}>
-          <h4 style={titleStyle}>1. Tipo de reemplazo</h4>
-          <label style={fieldStyle}>Selecciona cómo entregarás la garantía
-            <select style={controlStyle} value={form.modo_externo ? "externo" : "stock"} onChange={e=>setPedidoGarantiaForm(prev=>({...prev,modo_externo:e.target.value==="externo",cupo_numero:""}))}>
-              <option value="stock">Cuenta o perfil disponible del inventario</option>
-              <option value="externo">Credenciales externas nuevas (garantía)</option>
-            </select>
+      <div style={{display:"grid",gap:9}}>
+        <label style={fieldStyle}>Tipo de reemplazo
+          <select style={controlStyle} value={form.modo_externo ? "externo" : "stock"} onChange={e=>setPedidoGarantiaForm(prev=>({...prev,modo_externo:e.target.value==="externo",cupo_numero:""}))}>
+            <option value="stock">Cuenta o perfil disponible del inventario</option>
+            <option value="externo">Credenciales externas nuevas</option>
+          </select>
+        </label>
+        <div style={gridStyle}>
+          {!form.modo_externo ? <>
+            <label style={fieldStyle}>Cuenta de destino
+              <select style={controlStyle} value={form.inventario_destino_id} onChange={e=>setPedidoGarantiaForm(prev=>({...prev,inventario_destino_id:e.target.value,cupo_numero:""}))}>
+                <option value="">Selecciona cuenta</option>
+                {cuentas.map(c=><option key={c.id} value={c.id}>{c.correo || c.grupo || "Cuenta"} · {c.id===asignacion.inventario_id?"Actual":"Otra cuenta"}</option>)}
+              </select>
+            </label>
+            <label style={fieldStyle}>Perfil / cupo libre
+              <select style={controlStyle} value={form.cupo_numero} onChange={e=>update("cupo_numero",e.target.value)}>
+                <option value="">Selecciona perfil libre</option>
+                {cupos.map(n=><option key={n} value={n}>Perfil / cupo {n}</option>)}
+              </select>
+            </label>
+          </> : <>
+            <label style={fieldStyle}>Proveedor
+              <select style={controlStyle} value={form.proveedor_id} onChange={e=>update("proveedor_id",e.target.value)}>
+                <option value="">Selecciona proveedor</option>
+                {(data.proveedores||[]).map(x=><option key={x.id} value={x.id}>{x.nombre || x.iniciales || "Proveedor"}</option>)}
+              </select>
+            </label>
+            <label style={fieldStyle}>Correo / usuario nuevo
+              <input style={controlStyle} value={form.correo} onChange={e=>update("correo",e.target.value)} />
+            </label>
+            <label style={fieldStyle}>Contraseña del servicio
+              <input style={controlStyle} value={form.clave} onChange={e=>update("clave",e.target.value)} />
+            </label>
+            <label style={fieldStyle}>Grupo familiar (opcional)
+              <input style={controlStyle} value={form.grupo} onChange={e=>update("grupo",e.target.value)} />
+            </label>
+            <label style={fieldStyle}>PIN (opcional)
+              <input style={controlStyle} value={form.pin} onChange={e=>update("pin",e.target.value)} />
+            </label>
+            <label style={fieldStyle}>Perfil / cupo nuevo
+              <input style={controlStyle} type="number" min="1" max="50" value={form.cupo_numero} onChange={e=>update("cupo_numero",e.target.value)} />
+            </label>
+          </>}
+          <label style={fieldStyle}>Días extra (0 a 90)
+            <input style={controlStyle} type="number" min="0" max="90" value={form.dias_compensacion} onChange={e=>update("dias_compensacion",e.target.value)} />
           </label>
-        </section>
-
-        <section style={sectionStyle}>
-          <h4 style={titleStyle}>2. Datos del reemplazo</h4>
-          <div style={gridStyle}>
-            {!form.modo_externo ? <>
-              <label style={fieldStyle}>Cuenta de destino
-                <select style={controlStyle} value={form.inventario_destino_id} onChange={e=>setPedidoGarantiaForm(prev=>({...prev,inventario_destino_id:e.target.value,cupo_numero:""}))}>
-                  <option value="">Selecciona cuenta</option>
-                  {cuentas.map(c=><option key={c.id} value={c.id}>{c.correo || c.grupo || "Cuenta"} · {c.id===asignacion.inventario_id?"Actual":"Otra cuenta"}</option>)}
-                </select>
-              </label>
-              <label style={fieldStyle}>Perfil / cupo libre
-                <select style={controlStyle} value={form.cupo_numero} onChange={e=>update("cupo_numero",e.target.value)}>
-                  <option value="">Selecciona perfil libre</option>
-                  {cupos.map(n=><option key={n} value={n}>Perfil / cupo {n}</option>)}
-                </select>
-              </label>
-            </> : <>
-              <label style={fieldStyle}>Proveedor
-                <select style={controlStyle} value={form.proveedor_id} onChange={e=>update("proveedor_id",e.target.value)}>
-                  <option value="">Selecciona proveedor</option>
-                  {(data.proveedores||[]).map(x=><option key={x.id} value={x.id}>{x.nombre || x.iniciales || "Proveedor"}</option>)}
-                </select>
-              </label>
-              <label style={fieldStyle}>Usuario o correo de la nueva cuenta
-                <input style={controlStyle} value={form.correo} onChange={e=>update("correo",e.target.value)} />
-              </label>
-              <label style={fieldStyle}>Contraseña del servicio (opcional)
-                <input style={controlStyle} value={form.clave} onChange={e=>update("clave",e.target.value)} />
-              </label>
-              <label style={fieldStyle}>Grupo familiar (opcional)
-                <input style={controlStyle} value={form.grupo} onChange={e=>update("grupo",e.target.value)} />
-              </label>
-              <label style={fieldStyle}>PIN (opcional)
-                <input style={controlStyle} value={form.pin} onChange={e=>update("pin",e.target.value)} />
-              </label>
-              <label style={fieldStyle}>Perfil / cupo nuevo (1 a 50)
-                <input style={controlStyle} type="number" min="1" max="50" value={form.cupo_numero} onChange={e=>update("cupo_numero",e.target.value)} />
-              </label>
-            </>}
-            <label style={fieldStyle}>Correo del cliente para grupo familiar (si aplica)
-              <input style={controlStyle} value={form.correo_cliente} onChange={e=>update("correo_cliente",e.target.value)} placeholder="Correo propio del cliente" />
-            </label>
-          </div>
-        </section>
-
-        <section style={sectionStyle}>
-          <h4 style={titleStyle}>3. Compensación y motivo</h4>
-          <div style={gridStyle}>
-            <label style={fieldStyle}>Días adicionales (0 a 90)
-              <input style={controlStyle} type="number" min="0" max="90" value={form.dias_compensacion} onChange={e=>update("dias_compensacion",e.target.value)} />
-              <span style={{color:"#89a9c5",fontSize:12,fontWeight:400}}>Escribe 0 si conservarás la fecha de vencimiento.</span>
-            </label>
-            <label style={fieldStyle}>Motivo de la garantía
-              <textarea style={{...controlStyle,minHeight:96,resize:"vertical"}} rows={3} maxLength={500} value={form.motivo} onChange={e=>update("motivo",e.target.value)} placeholder="Ej. El perfil dejó de funcionar" />
-            </label>
-          </div>
-        </section>
+          <label style={fieldStyle}>Correo cliente / grupo familiar (si aplica)
+            <input style={controlStyle} value={form.correo_cliente} onChange={e=>update("correo_cliente",e.target.value)} placeholder="Correo propio del cliente" />
+          </label>
+        </div>
       </div>
-
-      <div style={{display:"flex",alignItems:"center",flexWrap:"wrap",gap:10,marginTop:20}}>
-        <button className="miniButton primaryMini" style={{minHeight:44,padding:"10px 16px",borderRadius:10}} type="button" disabled={working} onClick={()=>guardarGarantiaPedido(sub,asignacion)}>{working?"Guardando...":"✓ Guardar reemplazo sin venta nueva"}</button>
-        <button className="miniButton" style={{minHeight:44,padding:"10px 16px",borderRadius:10}} type="button" disabled={working} onClick={()=>setPedidoGarantiaId("")}>Cancelar</button>
+      <div style={{display:"flex",alignItems:"center",flexWrap:"wrap",gap:8,marginTop:10}}>
+        <button className="miniButton primaryMini" style={{minHeight:36,padding:"7px 11px",borderRadius:9}} type="button" disabled={working} onClick={()=>guardarGarantiaPedido(sub,asignacion)}>{working?"Guardando...":"✓ Guardar reemplazo"}</button>
+        <button className="miniButton" style={{minHeight:36,padding:"7px 11px",borderRadius:9}} type="button" disabled={working} onClick={()=>setPedidoGarantiaId("")}>Cancelar</button>
       </div>
-      <p style={{fontSize:12,color:"#8fb6d2",lineHeight:1.6,margin:"12px 0 0"}}>No aumenta el contador de pedidos ni registra otra ganancia. Si cambias un cupo ChatGPT, el registro del dispositivo quedará pendiente nuevamente.</p>
-      <details style={{marginTop:18,border:"1px solid #23537b",background:"#08182c",borderRadius:12,padding:"12px 15px"}}>
-        <summary style={{cursor:"pointer",fontWeight:600,color:"#bce3ff"}}>📋 Historial de reemplazos de este pedido ({pedidoGarantiaHistorial.length})</summary>
+      <p style={{fontSize:11,color:"#8fb6d2",lineHeight:1.45,margin:"8px 0 0"}}>Sin venta nueva ni ganancia adicional. 0 días conserva el vencimiento.</p>
+      <details style={{marginTop:10,borderTop:"1px solid #23537b",paddingTop:9}}>
+        <summary style={{cursor:"pointer",fontWeight:600,fontSize:12,color:"#bce3ff"}}>📋 Historial de reemplazos ({pedidoGarantiaHistorial.length})</summary>
         {pedidoGarantiaHistorial.length === 0 ? <p className="muted">Todavía no hay garantías anteriores.</p> :
-          pedidoGarantiaHistorial.map(h=><div key={h.id} style={{borderTop:"1px solid #21537b",padding:"10px 0",lineHeight:1.7}}>
+          pedidoGarantiaHistorial.map(h=><div key={h.id} style={{borderTop:"1px solid #21537b",padding:"8px 0",fontSize:12,lineHeight:1.5}}>
             <strong>{formatDate(String(h.creado_en).slice(0,10))} · {h.motivo}</strong><br/>
             Perfil {h.cupo_anterior} → {h.cupo_nuevo} · {h.dias_compensacion} día(s) adicionales<br/>
             Vencimiento {formatDate(h.fecha_vencimiento_anterior)} → {formatDate(h.fecha_vencimiento_nueva)}
