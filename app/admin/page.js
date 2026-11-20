@@ -2,6 +2,7 @@
 
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import { createPortal } from "react-dom";
 import { supabase } from "../../lib/supabase";
 
 function todayISO() {
@@ -503,6 +504,7 @@ const [profitEditValue, setProfitEditValue] = useState("");
   const [renewalDelivery, setRenewalDelivery] = useState(null);
   const [generatedGuarantees, setGeneratedGuarantees] = useState([]);
   const [pedidoGarantiaId, setPedidoGarantiaId] = useState("");
+  const [pedidoGarantiaAnchor, setPedidoGarantiaAnchor] = useState(null);
   const [pedidoGarantiaForm, setPedidoGarantiaForm] = useState({
     inventario_destino_id: "", cupo_numero: "", motivo: "", dias_compensacion: "0",
     modo_externo: false, correo_cliente: "", proveedor_id: "", correo: "", clave: "", pin: "", grupo: ""
@@ -1686,7 +1688,15 @@ duracion_cantidad: selectedDeliveryService.duracion_cantidad
     }
   }
 
-  function iniciarGarantiaPedido(sub, asignacion) {
+  function iniciarGarantiaPedido(sub, asignacion, event) {
+    const box = event?.currentTarget?.getBoundingClientRect?.();
+    if (box && typeof window !== "undefined") {
+      const width = Math.min(620, window.innerWidth - 24);
+      setPedidoGarantiaAnchor({
+        left: Math.max(12, Math.min(box.left, window.innerWidth - width - 12)),
+        top: box.bottom + 7
+      });
+    }
     const actual = asignacion?.item || inventoryAccountById(asignacion?.inventario_id);
     setPedidoGarantiaId(sub.id);
     setPedidoGarantiaMensaje(null);
@@ -1760,7 +1770,7 @@ duracion_cantidad: selectedDeliveryService.duracion_cantidad
     const fieldStyle = {display:"flex",flexDirection:"column",gap:5,minWidth:0,fontWeight:600,color:"#b7d6f1",fontSize:12};
     const controlStyle = {display:"block",width:"100%",minWidth:0,maxWidth:"100%",boxSizing:"border-box",background:"#06172c",color:"#f2f8ff",border:"1px solid #3077b1",borderRadius:9,padding:"8px 10px",height:36,fontSize:13,fontWeight:400};
     const gridStyle = {display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(min(100%,215px),1fr))",gap:"8px 10px",alignItems:"end",minWidth:0};
-    return <div className="card" style={{background:"#071d35",border:"1px solid #2580c1",borderRadius:12,padding:12,margin:"10px 0",width:"100%",maxWidth:620,minWidth:0,boxSizing:"border-box",overflow:"hidden",justifySelf:"start"}}>
+    return <div className="card" style={{background:"#071d35",border:"1px solid #2580c1",borderRadius:12,padding:12,margin:0,width:"100%",maxWidth:620,minWidth:0,boxSizing:"border-box",overflow:"hidden",justifySelf:"start"}}>
       <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:9,minWidth:0}}>
         <span style={{fontSize:18}}>🔄</span>
         <div style={{minWidth:0}}>
@@ -3459,7 +3469,7 @@ Cuenta para renovación
                           ) : (
                             <>
                               {renewalDropdown(s)}
-                              {view === "activas" && assignment?.activo && <button type="button" className="miniButton primaryMini" disabled={working} onClick={()=>iniciarGarantiaPedido(s,assignment)}>🔄 Reemplazar / garantía</button>}
+                              {view === "activas" && assignment?.activo && <button type="button" className="miniButton primaryMini" disabled={working} onClick={(event)=>iniciarGarantiaPedido(s,assignment,event)}>🔄 Reemplazar / garantía</button>}
                               <button type="button" className="miniButton" disabled={working} onClick={() => beginSubscriptionEdit(s)}>Editar</button>
                               <button type="button" className="miniButton" disabled={working} onClick={() => toggleSubscription(s)}>{s.activo ? "Suspender" : "Activar"}</button>
                               <button type="button" className="miniButton dangerMini" disabled={working} onClick={() => beginDeleteSelection("suscripciones", s.id)}>Borrar</button>
@@ -3468,8 +3478,24 @@ Cuenta para renovación
                         </div>
                       </td>
                     </tr>
-                    {view === "activas" && pedidoGarantiaId === s.id && assignment?.activo && (
-                      <tr key={`${s.id}-garantia`}><td colSpan={12}>{renderGarantiaPedido(s,assignment)}</td></tr>
+                    {view === "activas" && pedidoGarantiaId === s.id && assignment?.activo && pedidoGarantiaAnchor && typeof document !== "undefined" && createPortal(
+                      <div
+                        role="dialog"
+                        aria-label={`Reemplazar cuenta o perfil de ${s.cliente?.nombre || "cliente"}`}
+                        style={{
+                          position:"fixed", zIndex:100000,
+                          left:pedidoGarantiaAnchor.left,
+                          top:Math.min(pedidoGarantiaAnchor.top, Math.max(12, window.innerHeight - 210)),
+                          width:Math.min(620, window.innerWidth - 24),
+                          maxHeight:Math.max(180, window.innerHeight - Math.min(pedidoGarantiaAnchor.top, Math.max(12, window.innerHeight - 210)) - 12),
+                          overflowY:"auto", overflowX:"hidden",
+                          borderRadius:12, boxShadow:"0 16px 48px #000a",
+                          background:"#071d35"
+                        }}
+                      >
+                        {renderGarantiaPedido(s,assignment)}
+                      </div>,
+                      document.body
                     )}
                   </Fragment>);
                 })}
