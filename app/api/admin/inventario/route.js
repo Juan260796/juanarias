@@ -88,12 +88,13 @@ async function recalcInventoryState(supabase, inventarioId) {
 
 async function validateAssignment(supabase, inventarioId, suscripcionId, cupoNumero) {
   const [{ data: item, error: itemError }, { data: sub, error: subError }] = await Promise.all([
-    supabase.from("inventario_cuentas").select("id,servicio_id,estado,cupos_total,duracion_tipo,duracion_cantidad").eq("id", inventarioId).single(),
+    supabase.from("inventario_cuentas").select("id,servicio_id,estado,cupos_total,duracion_tipo,duracion_cantidad,fecha_vencimiento").eq("id", inventarioId).single(),
     supabase.from("suscripciones").select("id,cliente_id,servicio_id,fecha_inicio,fecha_vencimiento").eq("id", suscripcionId).single()
   ]);
   if (itemError || !item) return { error: itemError?.message || "Cuenta no encontrada." };
   if (subError || !sub) return { error: subError?.message || "Pedido no encontrado." };
   if (["fallida", "reemplazada"].includes(item.estado)) return { error: "Esa cuenta no está disponible para nuevas entregas." };
+  if (item.fecha_vencimiento && item.fecha_vencimiento <= todayISO()) return { error: "La cuenta principal ya venció. Actualiza su vigencia antes de asignar nuevos cupos." };
   if (item.servicio_id !== sub.servicio_id) return { error: "La cuenta no corresponde al servicio del pedido." };
   const cupo = Number(cupoNumero);
   if (!Number.isInteger(cupo) || cupo < 1 || cupo > Number(item.cupos_total || 1)) return { error: `El cupo/perfil debe estar entre 1 y ${item.cupos_total}.` };
@@ -105,11 +106,12 @@ async function validateAssignment(supabase, inventarioId, suscripcionId, cupoNum
 async function validateInventorySlot(supabase, inventarioId, cupoNumero) {
   const { data: item, error: itemError } = await supabase
     .from("inventario_cuentas")
-    .select("id,servicio_id,estado,cupos_total,duracion_tipo,duracion_cantidad")
+    .select("id,servicio_id,estado,cupos_total,duracion_tipo,duracion_cantidad,fecha_vencimiento")
     .eq("id", inventarioId)
     .single();
   if (itemError || !item) return { error: itemError?.message || "Cuenta no encontrada." };
   if (["fallida", "reemplazada"].includes(item.estado)) return { error: "Esa cuenta no está disponible para nuevas entregas." };
+  if (item.fecha_vencimiento && item.fecha_vencimiento <= todayISO()) return { error: "La cuenta principal ya venció. Actualiza su vigencia antes de asignar nuevos cupos." };
   const cupo = Number(cupoNumero);
   if (!Number.isInteger(cupo) || cupo < 1 || cupo > Number(item.cupos_total || 1)) {
     return { error: `El cupo/perfil debe estar entre 1 y ${item.cupos_total}.` };

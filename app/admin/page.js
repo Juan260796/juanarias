@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "../../lib/supabase";
 
@@ -92,8 +92,8 @@ function daysRemaining(value) {
   return Math.round((dueDay - todayDay) / 86400000);
 }
 
-// Los pedidos nuevos pueden tener hasta 30 dias de vencidos.
-// En Cuentas vencidas solo se muestran los pedidos vencidos hace 0 a 30 dias.
+// Los pedidos nuevos conservan su validación previa.
+// En Cuentas vencidas solo se muestran los pedidos vencidos hace 0 a 15 días.
 // Los mas antiguos siguen en Supabase para conservar ganancias y conteo historico.
 function errorFechaPedidoVencido(fechaVencimiento) {
   const dias = daysRemaining(fechaVencimiento);
@@ -110,6 +110,15 @@ function remainingText(days) {
   if (days === 0) return "Vencido hoy";
   if (days === -1) return "Vencido hace 1 día";
   return `Vencido hace ${Math.abs(days)} días`;
+}
+
+// Al crear un cliente, el usuario y la contraseña inicial deben ser idénticos.
+function suggestedClientAccess(fullName) {
+  const words = String(fullName || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .trim().split(/\s+/).map(w => w.replace(/[^a-zA-Z0-9]/g, "").toLowerCase()).filter(Boolean);
+  if (!words.length) return "";
+  const base = words[0] + (words.length > 1 ? words[1][0] : "");
+  return base;
 }
 
 function normalizeText(value) {
@@ -436,6 +445,8 @@ const [expiredFilterField, setExpiredFilterField] = useState("todos");
 const [expiredFilterValue, setExpiredFilterValue] = useState("");
   const [showClientCreateInline, setShowClientCreateInline] = useState(false);
   const [clientForm, setClientForm] = useState({ nombre: "", username: "", telefono: "", password: "" });
+  const [clientSuffix, setClientSuffix] = useState(() => String(Math.floor(Math.random() * 90) + 10));
+
   const [serviceForm, setServiceForm] = useState({ nombre: "", descripcion: "", duracion_tipo: "meses", duracion_cantidad: 1, tipo_entrega: "estandar" });
   const [subForm, setSubForm] = useState({
   cliente_id: "",
@@ -491,6 +502,14 @@ const [profitEditValue, setProfitEditValue] = useState("");
   const [newClientAccess, setNewClientAccess] = useState(null);
   const [renewalDelivery, setRenewalDelivery] = useState(null);
   const [generatedGuarantees, setGeneratedGuarantees] = useState([]);
+  const [pedidoGarantiaId, setPedidoGarantiaId] = useState("");
+  const [pedidoGarantiaForm, setPedidoGarantiaForm] = useState({
+    inventario_destino_id: "", cupo_numero: "", motivo: "", dias_compensacion: "0",
+    modo_externo: false, correo_cliente: "", proveedor_id: "", correo: "", clave: "", pin: "", grupo: ""
+  });
+  const [pedidoGarantiaMensaje, setPedidoGarantiaMensaje] = useState(null);
+  const [pedidoGarantiaHistorial, setPedidoGarantiaHistorial] = useState([]);
+
   const [replacementForm, setReplacementForm] = useState({ old_inventory_id: "" });
   const [replacementAccountForm, setReplacementAccountForm] = useState({ proveedor_id: "", correo: "", clave: "", pin: "", perfiles_pins: {}, grupo: "", cupos_total: "", duracion_tipo: "", duracion_cantidad: "", notas: "", fecha_carga: todayISO() });
   const [editingInventoryId, setEditingInventoryId] = useState("");
@@ -698,23 +717,45 @@ const [profitEditValue, setProfitEditValue] = useState("");
     .filter((s) => Boolean(s.activo) && Boolean(s.servicio?.activo !== false) && s.days !== null && s.days >= 1)
     .sort((a, b) => (a.days ?? 999999) - (b.days ?? 999999)), [enrichedSubs]);
 
-  // Mostrar el historial completo de vencidos, incluso pedidos archivados
-  // automaticamente (activo=false). El archivado solo libera los cupos.
+  // Mostrar vencidas recientes, sin eliminar filas ni modificar asignaciones.
   const expiredSubs = useMemo(() => enrichedSubs
   .filter((s) =>
     s.servicio?.activo !== false &&
     s.days !== null &&
     s.days <= 0 &&
-    s.days >= -30
+    s.days >= -15
   )
   .sort((a, b) => (b.days ?? -999999) - (a.days ?? -999999)),
 [enrichedSubs]);
 
+  // El indicador de vencidas cuenta SOLO pedidos con gestión pendiente
+  // (WhatsApp o liberación de cupo), nunca dos veces el mismo pedido.
+  const pendingExpiredCount = useMemo(() => {
+    // Una entrega de inventario pendiente sigue ocupando el cupo hasta pulsar
+    // Liberado. Solo contamos stock administrado; las cuentas externas no
+    // requieren gestión de perfil desde el inventario.
+    const managedIds = new Set((data.inventario_historico || data.inventario || [])
+      .filter(item => item.etiqueta !== "externa")
+      .map(item => item.id));
+    const assignmentsBySub = new Map();
+    for (const a of data.asignaciones || []) {
+      if (a.activo !== true || !managedIds.has(a.inventario_id)) continue;
+      if (!assignmentsBySub.has(a.suscripcion_id)) assignmentsBySub.set(a.suscripcion_id, []);
+      assignmentsBySub.get(a.suscripcion_id).push(a);
+    }
+    return expiredSubs.filter(sub => {
+      const needsWhatsapp = sub.reporte_vencimiento !== true;
+      const needsRelease = (assignmentsBySub.get(sub.id) || []).some(a =>
+        !managedInventoryNotices.includes(`${a.id}:${sub.fecha_vencimiento}`));
+      return needsWhatsapp || needsRelease;
+    }).length;
+  }, [expiredSubs, data.asignaciones, data.inventario_historico, data.inventario, managedInventoryNotices]);
+
   const stats = useMemo(() => ({
     clientes: data.clientes.length,
     activos: activeSubs.length,
-    vencidos: expiredSubs.length
-  }), [data.clientes.length, activeSubs.length, expiredSubs.length]);
+    vencidos: pendingExpiredCount
+  }), [data.clientes.length, activeSubs.length, pendingExpiredCount]);
 
   const selectedClient = useMemo(
     () => data.clientes.find((c) => c.id === subForm.cliente_id) || null,
@@ -824,8 +865,8 @@ const [profitEditValue, setProfitEditValue] = useState("");
     ).slice().sort((a, b) => String(b.entregado_at || "").localeCompare(String(a.entregado_at || "")));
   }, [data.premios_fidelidad]);
 
-  // Avisos de baja manual: los perfiles se liberan en el panel automáticamente,
-  // pero el administrador todavía debe retirarlos en la plataforma oficial.
+  // Avisos de baja manual: ninguna fecha libera automáticamente el cupo.
+  // Solo la confirmación Liberado libera el perfil y el registro del dispositivo.
   const inventoryExpiryNotices = useMemo(() => {
     const subscriptions = new Map(enrichedSubs.map(sub => [sub.id, sub]));
     const inventory = new Map((data.inventario_historico || data.inventario || []).map(item => [item.id, item]));
@@ -838,7 +879,7 @@ const [profitEditValue, setProfitEditValue] = useState("");
     }
     return [...latest.values()]
       .map(assignment => ({ assignment, sub: subscriptions.get(assignment.suscripcion_id), account: inventory.get(assignment.inventario_id) }))
-      .filter(({ sub, account, assignment }) => sub && account && account.etiqueta !== "externa" && sub.days !== null && sub.days <= 0 && sub.days >= -30 && !managedInventoryNotices.includes(`${assignment.id}:${sub.fecha_vencimiento}`))
+      .filter(({ sub, account, assignment }) => sub && account && account.etiqueta !== "externa" && sub.days !== null && sub.days <= 0 && assignment.activo === true && !managedInventoryNotices.includes(`${assignment.id}:${sub.fecha_vencimiento}`))
       .sort((a, b) => (a.sub.days ?? 0) - (b.sub.days ?? 0));
   }, [data.asignaciones, data.inventario, data.inventario_historico, enrichedSubs, managedInventoryNotices]);
 
@@ -886,7 +927,7 @@ const [profitEditValue, setProfitEditValue] = useState("");
     };
 
     return (data.inventario || [])
-      .filter((item) => !["fallida", "reemplazada"].includes(item.estado) && (assignmentCountByInventory[item.id] || 0) < Number(item.cupos_total || 1))
+      .filter((item) => !["fallida", "reemplazada"].includes(item.estado) && (item.fecha_vencimiento ? daysRemaining(item.fecha_vencimiento) > 0 : true) && (assignmentCountByInventory[item.id] || 0) < Number(item.cupos_total || 1))
       .slice()
       .sort((a, b) => {
         const freeA = Math.max(0, Number(a.cupos_total || 1) - (assignmentCountByInventory[a.id] || 0));
@@ -1180,6 +1221,12 @@ const [profitEditValue, setProfitEditValue] = useState("");
     if (client) setDeliveryClientQuery(client.nombre || client.username || "");
   }
 
+  function updateNewClientName(nombre) {
+    const base = suggestedClientAccess(nombre);
+    const credentials = base ? `${base}${clientSuffix}` : "";
+    setClientForm(prev => ({ ...prev, nombre, username: credentials, password: credentials }));
+  }
+
   const duplicateClientByName = (data.clientes || []).find(
     (cliente) => normalizeText(cliente.nombre) === normalizeText(clientForm.nombre) && normalizeText(clientForm.nombre)
   );
@@ -1191,16 +1238,17 @@ const [profitEditValue, setProfitEditValue] = useState("");
       return;
     }
     await runAction(async () => {
-      const result = await api("/api/admin/clientes", { method: "POST", body: JSON.stringify(clientForm) });
+      const result = await api("/api/admin/clientes", { method: "POST", body: JSON.stringify({ ...clientForm, password: clientForm.username }) });
       const created = result?.cliente;
       if (!created?.id) throw new Error("El cliente se creó, pero no se recibió su identificador. Recarga antes de crear el pedido.");
       // Contraseña temporal disponible únicamente para la primera entrega.
-      setNewClientAccess({ id: created.id, password: clientForm.password });
+      setNewClientAccess({ id: created.id, password: clientForm.username });
       setSubForm((prev) => ({ ...prev, cliente_id: created.id }));
       setDeliveryForm((prev) => ({ ...prev, cliente_id: created.id }));
       setClientQuery(created.nombre || created.username || "");
       await refresh(token);
       setClientForm({ nombre: "", username: "", telefono: "", password: "" });
+      setClientSuffix(String(Math.floor(Math.random() * 90) + 10));
       setShowClientCreateInline(false);
     }, "Cliente creado correctamente.");
   }
@@ -1638,6 +1686,181 @@ duracion_cantidad: selectedDeliveryService.duracion_cantidad
     }
   }
 
+  function iniciarGarantiaPedido(sub, asignacion) {
+    const actual = asignacion?.item || inventoryAccountById(asignacion?.inventario_id);
+    setPedidoGarantiaId(sub.id);
+    setPedidoGarantiaMensaje(null);
+    setPedidoGarantiaHistorial([]);
+    api(`/api/admin/reemplazo-pedido?suscripcion_id=${encodeURIComponent(sub.id)}`)
+      .then(result=>setPedidoGarantiaHistorial(result.historial||[]))
+      .catch(()=>{});
+    setPedidoGarantiaForm({
+      inventario_destino_id: actual?.id || "", cupo_numero: "", motivo: "",
+      dias_compensacion: "0", modo_externo: false,
+      correo_cliente: asignacion?.correo_cliente || "", proveedor_id: "",
+      correo: "", clave: "", pin: "", grupo: ""
+    });
+    setError("");
+  }
+
+  function opcionesGarantia(sub, asignacion) {
+    const actual = asignacion?.item || inventoryAccountById(asignacion?.inventario_id);
+    return (data.inventario || []).filter((cuenta) =>
+      cuenta.servicio_id === sub.servicio_id && cuenta.etiqueta !== "externa" &&
+      !["fallida", "reemplazada"].includes(cuenta.estado) &&
+      (!cuenta.fecha_vencimiento || daysRemaining(cuenta.fecha_vencimiento) >= 0) &&
+      (cuenta.id === actual?.id || Number(cuenta.cupos_total || 0) > 0)
+    );
+  }
+
+  async function guardarGarantiaPedido(sub, asignacion) {
+    const form = pedidoGarantiaForm;
+    if (String(form.motivo || "").trim().length < 5) { setError("Escribe un motivo de al menos 5 caracteres."); return; }
+    const dias = Number(form.dias_compensacion);
+    if (!Number.isInteger(dias) || dias < 0 || dias > 90) { setError("Selecciona entre 0 y 90 días de compensación."); return; }
+    if (!form.cupo_numero || Number(form.cupo_numero) < 1) { setError("Selecciona el cupo de destino."); return; }
+    const account = (data.inventario || []).find(c => c.id === form.inventario_destino_id);
+    if (!form.modo_externo && !account) { setError("Selecciona una cuenta del inventario."); return; }
+    setWorking(true); setError("");
+    try {
+      const payload = {
+        asignacion_id: asignacion.id, inventario_destino_id: form.inventario_destino_id,
+        cupo_numero: Number(form.cupo_numero), motivo: form.motivo,
+        dias_compensacion: dias, correo_cliente: form.correo_cliente,
+        modo_externo: form.modo_externo,
+        externo: { proveedor_id: form.proveedor_id, correo: form.correo, clave: form.clave,
+          pin: form.pin, grupo: form.grupo }
+      };
+      const result = await api("/api/admin/reemplazo-pedido", { method:"POST", body:JSON.stringify(payload) });
+      const dest = form.modo_externo
+        ? { correo: form.correo, clave: form.clave, grupo: form.grupo, pin: form.pin,
+            perfiles_pins: form.pin ? { [String(form.cupo_numero)]: form.pin } : {}, notas: "",
+            duracion_tipo: "meses", duracion_cantidad: 1 }
+        : account;
+      const nuevoSub = { ...sub, fecha_vencimiento: result.reemplazo.fecha_vencimiento };
+      const mensaje = `🔄 REEMPLAZO POR GARANTÍA · JUAN CUENTAS\n\n${buildDeliveryMessage(nuevoSub,dest,{
+        cupo_numero: Number(form.cupo_numero), correo_cliente: form.correo_cliente
+      })}\n\n📅 Nuevo vencimiento: ${formatDate(result.reemplazo.fecha_vencimiento)}${dias > 0 ? `\n🎁 ${dias} día(s) adicionales por compensación.` : ""}\n\nDisculpa las molestias ocasionadas. 💙`;
+      setPedidoGarantiaMensaje({ texto: mensaje, cliente: sub.cliente });
+      setPedidoGarantiaId("");
+      setMessage("Garantía registrada en el mismo pedido, sin ganancia ni venta duplicada.");
+      await refresh();
+    } catch(e) { setError(e.message); }
+    finally { setWorking(false); }
+  }
+
+  function renderGarantiaPedido(sub, asignacion) {
+    const cuentas = opcionesGarantia(sub, asignacion);
+    const form = pedidoGarantiaForm;
+    const actual = (data.inventario || []).find(x => x.id === form.inventario_destino_id);
+    const cupos = actual ? Array.from({length:Number(actual.cupos_total||1)},(_,i)=>i+1).filter(n=>
+      !(data.asignaciones||[]).some(a=>a.activo && a.id!==asignacion.id && a.inventario_id===actual.id && Number(a.cupo_numero)===n)
+      && !(actual.id===asignacion.inventario_id && n===Number(asignacion.cupo_numero))) : [];
+    const update = (field, value) => setPedidoGarantiaForm(prev=>({...prev,[field]:value}));
+    const fieldStyle = {display:"flex",flexDirection:"column",gap:8,minWidth:0,width:"100%",fontWeight:600,color:"#b7d6f1",fontSize:13};
+    const controlStyle = {width:"100%",minWidth:0,maxWidth:"100%",boxSizing:"border-box",background:"#06172c",color:"#f2f8ff",border:"1px solid #3077b1",borderRadius:10,padding:"11px 13px",minHeight:44,fontSize:14,fontWeight:400,outlineOffset:2};
+    const gridStyle = {display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(min(100%, 270px), 1fr))",gap:16,alignItems:"start",width:"100%"};
+    const sectionStyle = {background:"#091b32",border:"1px solid #1d456c",borderRadius:13,padding:16,display:"flex",flexDirection:"column",gap:15,minWidth:0};
+    const titleStyle = {margin:0,color:"#e8f6ff",fontWeight:700,fontSize:14};
+    return <div className="card" style={{background:"#071d35",border:"1px solid #2580c1",padding:"clamp(15px, 2.5vw, 24px)",margin:"14px 0",borderRadius:16,maxWidth:"100%",boxSizing:"border-box"}}>
+      <div style={{display:"flex",alignItems:"flex-start",gap:12,flexWrap:"wrap",marginBottom:20}}>
+        <div style={{width:40,height:40,background:"#0b3c69",border:"1px solid #287fb9",borderRadius:12,display:"grid",placeItems:"center",flexShrink:0,fontSize:20}}>🔄</div>
+        <div style={{flex:"1 1 220px",minWidth:0}}>
+          <h3 style={{margin:"0 0 6px",fontSize:19,color:"#f3f9ff"}}>Reemplazar cuenta o perfil · Garantía</h3>
+          <div style={{color:"#a8c8e2",fontSize:13,lineHeight:1.6}}>
+            <strong style={{color:"#e5f3ff"}}>{sub.cliente?.nombre || "Cliente"}</strong> · {sub.servicio?.nombre || "Servicio"}
+          </div>
+          <div style={{color:"#91c8ee",fontSize:12,marginTop:3}}>El pedido y su ganancia se conservan. Puedes compensar hasta 90 días sin crear otra venta.</div>
+        </div>
+      </div>
+
+      <div style={{display:"flex",flexDirection:"column",gap:16}}>
+        <section style={sectionStyle}>
+          <h4 style={titleStyle}>1. Tipo de reemplazo</h4>
+          <label style={fieldStyle}>Selecciona cómo entregarás la garantía
+            <select style={controlStyle} value={form.modo_externo ? "externo" : "stock"} onChange={e=>setPedidoGarantiaForm(prev=>({...prev,modo_externo:e.target.value==="externo",cupo_numero:""}))}>
+              <option value="stock">Cuenta o perfil disponible del inventario</option>
+              <option value="externo">Credenciales externas nuevas (garantía)</option>
+            </select>
+          </label>
+        </section>
+
+        <section style={sectionStyle}>
+          <h4 style={titleStyle}>2. Datos del reemplazo</h4>
+          <div style={gridStyle}>
+            {!form.modo_externo ? <>
+              <label style={fieldStyle}>Cuenta de destino
+                <select style={controlStyle} value={form.inventario_destino_id} onChange={e=>setPedidoGarantiaForm(prev=>({...prev,inventario_destino_id:e.target.value,cupo_numero:""}))}>
+                  <option value="">Selecciona cuenta</option>
+                  {cuentas.map(c=><option key={c.id} value={c.id}>{c.correo || c.grupo || "Cuenta"} · {c.id===asignacion.inventario_id?"Actual":"Otra cuenta"}</option>)}
+                </select>
+              </label>
+              <label style={fieldStyle}>Perfil / cupo libre
+                <select style={controlStyle} value={form.cupo_numero} onChange={e=>update("cupo_numero",e.target.value)}>
+                  <option value="">Selecciona perfil libre</option>
+                  {cupos.map(n=><option key={n} value={n}>Perfil / cupo {n}</option>)}
+                </select>
+              </label>
+            </> : <>
+              <label style={fieldStyle}>Proveedor
+                <select style={controlStyle} value={form.proveedor_id} onChange={e=>update("proveedor_id",e.target.value)}>
+                  <option value="">Selecciona proveedor</option>
+                  {(data.proveedores||[]).map(x=><option key={x.id} value={x.id}>{x.nombre || x.iniciales || "Proveedor"}</option>)}
+                </select>
+              </label>
+              <label style={fieldStyle}>Usuario o correo de la nueva cuenta
+                <input style={controlStyle} value={form.correo} onChange={e=>update("correo",e.target.value)} />
+              </label>
+              <label style={fieldStyle}>Contraseña del servicio (opcional)
+                <input style={controlStyle} value={form.clave} onChange={e=>update("clave",e.target.value)} />
+              </label>
+              <label style={fieldStyle}>Grupo familiar (opcional)
+                <input style={controlStyle} value={form.grupo} onChange={e=>update("grupo",e.target.value)} />
+              </label>
+              <label style={fieldStyle}>PIN (opcional)
+                <input style={controlStyle} value={form.pin} onChange={e=>update("pin",e.target.value)} />
+              </label>
+              <label style={fieldStyle}>Perfil / cupo nuevo (1 a 50)
+                <input style={controlStyle} type="number" min="1" max="50" value={form.cupo_numero} onChange={e=>update("cupo_numero",e.target.value)} />
+              </label>
+            </>}
+            <label style={fieldStyle}>Correo del cliente para grupo familiar (si aplica)
+              <input style={controlStyle} value={form.correo_cliente} onChange={e=>update("correo_cliente",e.target.value)} placeholder="Correo propio del cliente" />
+            </label>
+          </div>
+        </section>
+
+        <section style={sectionStyle}>
+          <h4 style={titleStyle}>3. Compensación y motivo</h4>
+          <div style={gridStyle}>
+            <label style={fieldStyle}>Días adicionales (0 a 90)
+              <input style={controlStyle} type="number" min="0" max="90" value={form.dias_compensacion} onChange={e=>update("dias_compensacion",e.target.value)} />
+              <span style={{color:"#89a9c5",fontSize:12,fontWeight:400}}>Escribe 0 si conservarás la fecha de vencimiento.</span>
+            </label>
+            <label style={fieldStyle}>Motivo de la garantía
+              <textarea style={{...controlStyle,minHeight:96,resize:"vertical"}} rows={3} maxLength={500} value={form.motivo} onChange={e=>update("motivo",e.target.value)} placeholder="Ej. El perfil dejó de funcionar" />
+            </label>
+          </div>
+        </section>
+      </div>
+
+      <div style={{display:"flex",alignItems:"center",flexWrap:"wrap",gap:10,marginTop:20}}>
+        <button className="miniButton primaryMini" style={{minHeight:44,padding:"10px 16px",borderRadius:10}} type="button" disabled={working} onClick={()=>guardarGarantiaPedido(sub,asignacion)}>{working?"Guardando...":"✓ Guardar reemplazo sin venta nueva"}</button>
+        <button className="miniButton" style={{minHeight:44,padding:"10px 16px",borderRadius:10}} type="button" disabled={working} onClick={()=>setPedidoGarantiaId("")}>Cancelar</button>
+      </div>
+      <p style={{fontSize:12,color:"#8fb6d2",lineHeight:1.6,margin:"12px 0 0"}}>No aumenta el contador de pedidos ni registra otra ganancia. Si cambias un cupo ChatGPT, el registro del dispositivo quedará pendiente nuevamente.</p>
+      <details style={{marginTop:18,border:"1px solid #23537b",background:"#08182c",borderRadius:12,padding:"12px 15px"}}>
+        <summary style={{cursor:"pointer",fontWeight:600,color:"#bce3ff"}}>📋 Historial de reemplazos de este pedido ({pedidoGarantiaHistorial.length})</summary>
+        {pedidoGarantiaHistorial.length === 0 ? <p className="muted">Todavía no hay garantías anteriores.</p> :
+          pedidoGarantiaHistorial.map(h=><div key={h.id} style={{borderTop:"1px solid #21537b",padding:"10px 0",lineHeight:1.7}}>
+            <strong>{formatDate(String(h.creado_en).slice(0,10))} · {h.motivo}</strong><br/>
+            Perfil {h.cupo_anterior} → {h.cupo_nuevo} · {h.dias_compensacion} día(s) adicionales<br/>
+            Vencimiento {formatDate(h.fecha_vencimiento_anterior)} → {formatDate(h.fecha_vencimiento_nueva)}
+          </div>)}
+      </details>
+    </div>;
+  }
+
   function beginReplacement(item) {
     const service = (data.servicios || []).find((entry) => entry.id === item.servicio_id) || null;
     const type = effectiveDeliveryType(service);
@@ -2015,7 +2238,7 @@ duracion_cantidad: selectedDeliveryService.duracion_cantidad
         body: JSON.stringify({ asignacion_id: assignment.id, suscripcion_id: sub.id, fecha_vencimiento: sub.fecha_vencimiento, tipo_gestion: tipoGestion })
       });
       setManagedInventoryNotices((prev) => [...new Set([...prev, clave])]);
-    }, "Aviso gestionado. Esta acción solo registra lo realizado en la plataforma oficial, no renueva ni cambia ganancias.");
+    }, "Cupo liberado en el panel. El registro del dispositivo se elimina si el pedido no conserva otra asignación activa. No se modifica la ganancia.");
   }
 
   // La selección es por aviso (asignación + vencimiento), no por cuenta.
@@ -2049,13 +2272,14 @@ duracion_cantidad: selectedDeliveryService.duracion_cantidad
         }
       }
       if (succeeded.length) {
+        await refresh(); // Actualizar los cupos libres inmediatamente tras la gestión masiva.
         setManagedInventoryNotices((prev) => [...new Set([...prev, ...succeeded])]);
         setSelectedInventoryNotices((prev) => prev.filter((key) => !succeeded.includes(key)));
       }
       if (failed.length) {
         setError(`${succeeded.length} gestionado(s), ${failed.length} sin gestionar. ${failed[0]}`);
       } else {
-        setMessage(`${succeeded.length} aviso(s) marcados como gestionados. No se modificaron pedidos ni ganancias.`);
+        setMessage(`${succeeded.length} cupo(s) liberados. No se modificaron pedidos ni ganancias.`);
       }
     } finally {
       setWorking(false);
@@ -3132,7 +3356,8 @@ Cuenta para renovación
                   const editing = editingSubscriptionId === s.id;
                   
                   return (
-                    <tr key={s.id} className={editing ? "subscriptionEditRow" : ""}>
+                    <Fragment key={s.id}>
+                    <tr className={editing ? "subscriptionEditRow" : ""}>
                       {deleteMode["suscripciones"] && (
                       <td className="selectColumn"><input type="checkbox" aria-label={`Seleccionar ${s.cliente?.nombre || "pedido"}`} checked={selectedDeleteIds("suscripciones").includes(s.id)} onChange={() => toggleDeleteSelection("suscripciones", s.id)} /></td>
                       ) }
@@ -3258,6 +3483,7 @@ Cuenta para renovación
                           ) : (
                             <>
                               {renewalDropdown(s)}
+                              {view === "activas" && assignment?.activo && <button type="button" className="miniButton primaryMini" disabled={working} onClick={()=>iniciarGarantiaPedido(s,assignment)}>🔄 Reemplazar / garantía</button>}
                               <button type="button" className="miniButton" disabled={working} onClick={() => beginSubscriptionEdit(s)}>Editar</button>
                               <button type="button" className="miniButton" disabled={working} onClick={() => toggleSubscription(s)}>{s.activo ? "Suspender" : "Activar"}</button>
                               <button type="button" className="miniButton dangerMini" disabled={working} onClick={() => beginDeleteSelection("suscripciones", s.id)}>Borrar</button>
@@ -3266,7 +3492,10 @@ Cuenta para renovación
                         </div>
                       </td>
                     </tr>
-                  );
+                    {view === "activas" && pedidoGarantiaId === s.id && assignment?.activo && (
+                      <tr key={`${s.id}-garantia`}><td colSpan={12}>{renderGarantiaPedido(s,assignment)}</td></tr>
+                    )}
+                  </Fragment>);
                 })}
               </tbody>
             </table>
@@ -3330,7 +3559,7 @@ Cuenta para renovación
             )}
             {showClientMatches && clientQuery && clientMatches.length === 0 && (
               <button type="button" className="button secondary" onMouseDown={(e)=>e.preventDefault()} onClick={() => {
-                setClientForm((prev)=>({ ...prev, nombre: clientQuery }));
+                updateNewClientName(clientQuery);
                 setShowClientCreateInline(true);
               }}>
                 + Crear este cliente nuevo
@@ -3340,11 +3569,11 @@ Cuenta para renovación
               <div className="card" style={{marginTop:12}}>
                 <h3>Crear cliente y continuar pedido</h3>
                 <div className="twoCols">
-                  <label>Nombre<input value={clientForm.nombre} onChange={(e)=>setClientForm({...clientForm,nombre:e.target.value})}/></label>
+                  <label>Nombre<input value={clientForm.nombre} onChange={(e)=>updateNewClientName(e.target.value)}/></label>
                   {duplicateClientByName && <p role="alert" style={{ color: "#ff9c9c" }}>⚠️ Ya existe «{duplicateClientByName.nombre}». No se permite duplicar nombres.</p>}
-                  <label>Usuario<input value={clientForm.username} onChange={(e)=>setClientForm({...clientForm,username:e.target.value})}/></label>
+                  <label>Usuario<input value={clientForm.username} onChange={(e)=>setClientForm(prev => ({...prev,username:e.target.value,password:e.target.value}))}/></label>
                   <label>Teléfono / usuario WhatsApp<input value={clientForm.telefono} onChange={(e)=>setClientForm({...clientForm,telefono:e.target.value})}/></label>
-                  <label>Contraseña<input value={clientForm.password} onChange={(e)=>setClientForm({...clientForm,password:e.target.value})}/></label>
+                  <label>Contraseña<input value={clientForm.password} onChange={(e)=>setClientForm({...clientForm,password:e.target.value})}/>{clientForm.password && clientForm.password.length < 6 && <small style={{color:"#ffbd76"}}>Mínimo 6 caracteres. Ajusta usuario y clave si el nombre es muy corto.</small>}</label>
                 </div>
                 <button type="button" className="button primary" onClick={createClient}>Guardar cliente y continuar pedido</button>
               </div>
@@ -3768,6 +3997,15 @@ Solo aparecen cuentas con 1 día o más restante.
 </div>
 
 {renderAccountsTable(filtered, "No hay cuentas activas.")}
+        {pedidoGarantiaMensaje && <div className="card" style={{marginTop:12,border:"1px solid #2580c1",background:"#071d35"}}>
+          <h3>✅ Garantía realizada · Mensaje para el cliente</h3>
+          <textarea readOnly rows={10} style={{width:"100%"}} value={pedidoGarantiaMensaje.texto} />
+          <div className="inlineActions">
+            <button type="button" className="miniButton primaryMini" onClick={()=>copyText(pedidoGarantiaMensaje.texto)}>📋 Copiar mensaje</button>
+            <button type="button" className="miniButton" onClick={()=>{ const url=whatsappUrl(pedidoGarantiaMensaje.cliente?.telefono,""); if(url) window.open(url,"_blank","noopener,noreferrer"); else setError("El cliente no tiene WhatsApp configurado."); }}>💬 Abrir WhatsApp</button>
+            <button type="button" className="miniButton" onClick={()=>setPedidoGarantiaMensaje(null)}>Cerrar</button>
+          </div>
+        </div>}
 </>
 );
 }
@@ -3795,6 +4033,7 @@ return (
 <div className="pageHeading">
 <p className="muted">Alertas</p>
 <h1>Cuentas vencidas</h1>
+<p className="muted">Se muestran pedidos de hasta 15 días de vencidos. Los pendientes de liberar permanecen en Alertas hasta gestionarlos.</p>
 
 <div className="accountFilters">
 
@@ -4247,12 +4486,13 @@ async function saveProfitEdit(item) {
           <form className="card quickClientForm" onSubmit={createClient}>
             <div className="quickClientFormHead"><strong>Nuevo cliente</strong><button type="button" className="miniButton" onClick={() => setShowClientCreateInline(false)}>Cerrar</button></div>
             <div className="quickClientGrid">
-              <input placeholder="Nombre" value={clientForm.nombre} onChange={(e) => setClientForm({ ...clientForm, nombre: e.target.value })} required />
+              <input placeholder="Nombre" value={clientForm.nombre} onChange={(e) => updateNewClientName(e.target.value)} required />
           {duplicateClientByName && <p role="alert" style={{ color: "#ff9c9c", margin: "4px 0" }}>⚠️ Ya existe «{duplicateClientByName.nombre}». No se permite duplicar nombres.</p>}
               {duplicateClientByName && <p role="alert" style={{ color: "#ff9c9c", margin: "4px 0" }}>⚠️ Ya existe «{duplicateClientByName.nombre}». No se permite duplicar nombres.</p>}
-              <input placeholder="Usuario (ej. Alejandra45)" value={clientForm.username} onChange={(e) => setClientForm({ ...clientForm, username: e.target.value })} required />
+              <input placeholder="Usuario (ej. Alejandra45)" value={clientForm.username} onChange={(e) => setClientForm(prev => ({ ...prev, username: e.target.value, password: e.target.value }))} required />
               <input placeholder="Número o @usuario de WhatsApp" value={clientForm.telefono} onChange={(e) => setClientForm({ ...clientForm, telefono: e.target.value })} />
-              <input placeholder="Contraseña inicial" type="password" minLength={6} value={clientForm.password} onChange={(e) => setClientForm({ ...clientForm, password: e.target.value })} required />
+              <input placeholder="Contraseña inicial (igual al usuario)" type="text" minLength={6} value={clientForm.username} readOnly autoComplete="new-password" title="La contraseña se genera automáticamente igual al usuario" required />
+              {clientForm.nombre.trim() && clientForm.password.length > 0 && clientForm.password.length < 6 && <small style={{color:"#ffbd76"}}>El nombre es muy corto: ajusta el usuario y la contraseña a mínimo 6 caracteres para crear el acceso.</small>}
             </div>
             <button className="miniButton primaryMini" disabled={working}>{working ? "Creando..." : "Crear cliente"}</button>
           </form>
@@ -4442,10 +4682,11 @@ async function saveProfitEdit(item) {
       <>
         <div className="pageHeading"><p className="muted">Clientes</p><h1>Crear cliente</h1><p className="pageLead">Crea su acceso con usuario, celular y contraseña inicial. No necesita correo.</p></div>
         <form className="card adminForm standaloneForm" onSubmit={createClient}>
-          <input placeholder="Nombre" value={clientForm.nombre} onChange={(e) => setClientForm({ ...clientForm, nombre: e.target.value })} required />
-          <input placeholder="Usuario (ej. Alejandra45)" value={clientForm.username} onChange={(e) => setClientForm({ ...clientForm, username: e.target.value })} required />
+          <input placeholder="Nombre" value={clientForm.nombre} onChange={(e) => updateNewClientName(e.target.value)} required />
+          <input placeholder="Usuario (ej. Alejandra45)" value={clientForm.username} onChange={(e) => setClientForm(prev => ({ ...prev, username: e.target.value, password: e.target.value }))} required />
           <input placeholder="Número o @usuario de WhatsApp" value={clientForm.telefono} onChange={(e) => setClientForm({ ...clientForm, telefono: e.target.value })} />
-          <input placeholder="Contraseña inicial" type="password" minLength={6} value={clientForm.password} onChange={(e) => setClientForm({ ...clientForm, password: e.target.value })} required />
+          <input placeholder="Contraseña inicial (igual al usuario)" type="text" minLength={6} value={clientForm.username} readOnly autoComplete="new-password" title="La contraseña se genera automáticamente igual al usuario" required />
+              {clientForm.nombre.trim() && clientForm.password.length > 0 && clientForm.password.length < 6 && <small style={{color:"#ffbd76"}}>El nombre es muy corto: ajusta el usuario y la contraseña a mínimo 6 caracteres para crear el acceso.</small>}
           <button className="button primary" disabled={working}>{working ? "Creando..." : "Crear cliente"}</button>
         </form>
       </>
@@ -5868,7 +6109,7 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
           <p className="navLabel">PEDIDOS</p>
           <button className={view === "pedido" ? "active" : ""} onClick={() => navigate("pedido")}><NavIcon name="order" /><span className="navText">Generar nuevo pedido</span></button>
           <button className={view === "activas" ? "active" : ""} onClick={() => navigate("activas")}><NavIcon name="active" /><span className="navText">Cuentas activas</span><b>{stats.activos}</b></button>
-          <button className={view === "vencidas" ? "active" : ""} onClick={() => navigate("vencidas")}><NavIcon name="expired" /><span className="navText">Cuentas vencidas</span><b className="expiredCount">{stats.vencidos}</b></button>
+          <button className={view === "vencidas" ? "active" : ""} onClick={() => navigate("vencidas")}><NavIcon name="expired" /><span className="navText">Cuentas vencidas</span><b className="expiredCount" title="Pedidos vencidos pendientes de reporte WhatsApp o liberación de cupo">{stats.vencidos}</b></button>
           <button className={view === "ganancias" ? "active" : ""} onClick={() => navigate("ganancias")}><NavIcon name="profit" /><span className="navText">Ganancias</span></button>
           <button className={view === "clientes" ? "active" : ""} onClick={() => navigate("clientes")}><NavIcon name="clients" /><span className="navText">Clientes</span><b>{stats.clientes}</b></button>
           <button className={view === "promociones" ? "active" : ""} onClick={() => navigate("promociones")}><NavIcon name="gift" /><span className="navText">Promociones</span><b>{todayPromotions.length}</b></button>

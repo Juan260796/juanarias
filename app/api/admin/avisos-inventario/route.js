@@ -26,7 +26,7 @@ export async function POST(request) {
     return Response.json({ error: "Aviso inválido." }, { status: 400 });
   }
   const { data: assignment, error: readError } = await supabase.from("inventario_asignaciones")
-    .select("id,suscripcion_id")
+    .select("id,suscripcion_id,inventario_id,activo")
     .eq("id", asignacion_id).eq("suscripcion_id", suscripcion_id).maybeSingle();
   if (readError || !assignment) return Response.json({ error: "La entrega ya no existe." }, { status: 404 });
   const { data: subscription } = await supabase.from("suscripciones")
@@ -48,5 +48,31 @@ export async function POST(request) {
     { onConflict: "asignacion_id,fecha_vencimiento" }
   );
   if (error) return Response.json({ error: error.message }, { status: 500 });
+
+  if (tipo_gestion === "retirado" && assignment.activo === true) {
+    // La desactivación dispara la limpieza del registro de dispositivo
+    // asociado al pedido cuando este ya no tiene cupos activos.
+    const { error: releaseError } = await supabase.from("inventario_asignaciones")
+      .update({ activo: false }).eq("id", asignacion_id).eq("activo", true);
+    if (releaseError) {
+      // Sin confirmación de liberación, el aviso no debe quedar gestionado.
+      await supabase.from("avisos_inventario_gestionados")
+        .delete().eq("asignacion_id", asignacion_id).eq("fecha_vencimiento", fecha_vencimiento);
+      return Response.json({ error: "No se pudo liberar el cupo: " + releaseError.message }, { status: 500 });
+    }
+    if (assignment.inventario_id) {
+      const { data: account, error: accountError } = await supabase.from("inventario_cuentas")
+        .select("id,cupos_total,estado").eq("id", assignment.inventario_id).maybeSingle();
+      if (accountError) return Response.json({ error: accountError.message }, { status: 500 });
+      if (account && !["fallida", "reemplazada"].includes(account.estado)) {
+        const { count, error: countError } = await supabase.from("inventario_asignaciones")
+          .select("id", { count: "exact", head: true }).eq("inventario_id", account.id).eq("activo", true);
+        if (countError) return Response.json({ error: countError.message }, { status: 500 });
+        const estado = Number(count || 0) >= Number(account.cupos_total || 1) ? "agotada" : "disponible";
+        const { error: stateError } = await supabase.from("inventario_cuentas").update({ estado }).eq("id", account.id);
+        if (stateError) return Response.json({ error: stateError.message }, { status: 500 });
+      }
+    }
+  }
   return Response.json({ ok: true });
 }
