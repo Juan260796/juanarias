@@ -235,6 +235,12 @@ function providerInitials(item) {
   return provider?.iniciales || "";
 }
 
+// En los mensajes de venta se muestra solo el nombre/iniciales del proveedor.
+// La plataforma entre paréntesis se conserva exclusivamente en las listas del panel.
+function providerNameForSaleMessage(value) {
+  return String(value || "").trim().replace(/\s*\([^()]*\)\s*$/, "").trim();
+}
+
 
 function NavIcon({ name }) {
   const common = { fill: "none", stroke: "currentColor", strokeWidth: 1.9, strokeLinecap: "round", strokeLinejoin: "round" };
@@ -484,7 +490,9 @@ const [profitEditValue, setProfitEditValue] = useState("");
   const [promotionSearch, setPromotionSearch] = useState("");
   const [reactivatePromotionId, setReactivatePromotionId] = useState("");
   const [reactivatePromotionDays, setReactivatePromotionDays] = useState("1");
-  const [providerForm, setProviderForm] = useState({ iniciales: "" });
+  const [providerForm, setProviderForm] = useState({ iniciales: "", plataforma: "" });
+  const [editingProviderId, setEditingProviderId] = useState("");
+  const [providerEditForm, setProviderEditForm] = useState({ iniciales: "", plataforma: "" });
   const [inventoryTab, setInventoryTab] = useState("proveedores");
   const [inventoryServiceQuery, setInventoryServiceQuery] = useState("");
   const [showInventoryServiceMatches, setShowInventoryServiceMatches] = useState(false);
@@ -1424,9 +1432,25 @@ const [profitEditValue, setProfitEditValue] = useState("");
   async function createProvider(e) {
     e.preventDefault();
     await runAction(async () => {
-      await api("/api/admin/proveedores", { method: "POST", body: JSON.stringify(providerForm) });
-      setProviderForm({ iniciales: "" });
+      await api("/api/admin/proveedores-plataforma", { method: "POST", body: JSON.stringify(providerForm) });
+      setProviderForm({ iniciales: "", plataforma: "" });
     }, "Proveedor agregado.");
+  }
+
+  function beginProviderEdit(provider) {
+    setEditingProviderId(provider.id);
+    setProviderEditForm({ iniciales: provider.iniciales || "", plataforma: provider.plataforma || "" });
+  }
+
+  async function saveProviderEdit(event) {
+    event.preventDefault();
+    const id = editingProviderId;
+    const payload = { id, iniciales: providerEditForm.iniciales, plataforma: providerEditForm.plataforma };
+    await runAction(async () => {
+      await api("/api/admin/proveedores-plataforma", { method: "PATCH", body: JSON.stringify(payload) });
+      setEditingProviderId("");
+      setProviderEditForm({ iniciales: "", plataforma: "" });
+    }, "Proveedor editado correctamente.");
   }
 
   async function deleteProvider(provider) {
@@ -1457,6 +1481,11 @@ const [profitEditValue, setProfitEditValue] = useState("");
 
   async function saveInventoryEdit(e) {
     e.preventDefault();
+    const total = Number(inventoryEditForm.cupos_total);
+    if (!Number.isInteger(total) || total < 1 || total > 50) {
+      setError("Escribe un número de cupos/perfiles válido entre 1 y 50.");
+      return;
+    }
     await runAction(async () => {
       const editServiceData = (data.servicios || []).find(s => s.id === inventoryEditForm.servicio_id);
       await api("/api/admin/inventario", { method: "PATCH", body: JSON.stringify({ id: editingInventoryId, ...inventoryEditForm,
@@ -1519,7 +1548,7 @@ const [profitEditValue, setProfitEditValue] = useState("");
     const cliente = sub.cliente?.nombre || sub.cliente?.username || "Cliente";
     const service = sub.servicio || data.servicios.find((srv) => srv.id === sub.servicio_id);
     const durationLabel = inventoryDurationText(item);
-    const provider = providerInitials(item);
+    const provider = providerNameForSaleMessage(providerInitials(item));
     const providerTag = provider ? ` (${provider})` : "";
     const purchaseDate = formatLongDate(sub.fecha_inicio);
     const cupo = assignmentData.cupo_numero || deliveryForm.cupo_numero || 1;
@@ -1697,7 +1726,7 @@ duracion_cantidad: selectedDeliveryService.duracion_cantidad
         top: box.bottom + 7
       });
     }
-    const actual = asignacion?.item || inventoryAccountById(asignacion?.inventario_id);
+    const opciones = opcionesGarantia(sub, asignacion);
     setPedidoGarantiaId(sub.id);
     setPedidoGarantiaMensaje(null);
     setPedidoGarantiaHistorial([]);
@@ -1705,7 +1734,7 @@ duracion_cantidad: selectedDeliveryService.duracion_cantidad
       .then(result=>setPedidoGarantiaHistorial(result.historial||[]))
       .catch(()=>{});
     setPedidoGarantiaForm({
-      inventario_destino_id: actual?.id || "", cupo_numero: "", motivo: "",
+      inventario_destino_id: opciones[0]?.id || "", cupo_numero: "", motivo: "",
       dias_compensacion: "0", modo_externo: false,
       correo_cliente: asignacion?.correo_cliente || "", proveedor_id: "",
       correo: "", clave: "", pin: "", grupo: ""
@@ -1713,14 +1742,39 @@ duracion_cantidad: selectedDeliveryService.duracion_cantidad
     setError("");
   }
 
-  function opcionesGarantia(sub, asignacion) {
-    const actual = asignacion?.item || inventoryAccountById(asignacion?.inventario_id);
-    return (data.inventario || []).filter((cuenta) =>
-      cuenta.servicio_id === sub.servicio_id && cuenta.etiqueta !== "externa" &&
-      !["fallida", "reemplazada"].includes(cuenta.estado) &&
-      (!cuenta.fecha_vencimiento || daysRemaining(cuenta.fecha_vencimiento) >= 0) &&
-      (cuenta.id === actual?.id || Number(cuenta.cupos_total || 0) > 0)
-    );
+  function opcionesGarantia(sub, asignacion, diasExtra = 0) {
+    // Una cuenta nueva de 30 días puede reemplazar un pedido con 15 días
+    // restantes; lo relevante es el vencimiento real, no la duración comprada.
+    // Algunos servicios tienen IDs distintos por duración (ej. Crunchyroll 30 días
+    // y Crunchyroll 2 meses). Compararlos por plataforma/plan equivalente.
+    const baseServicio = (nombre) => String(nombre || "")
+      .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase().trim()
+      .replace(/\s+(?:x\s*)?\d+\s*(?:dias?|mes(?:es)?|anos?)\s*$/i, "")
+      .replace(/\s+/g, " ");
+    const servicioOriginal = (data.servicios || []).find(s => s.id === sub.servicio_id);
+    const nombreOriginal = baseServicio(servicioOriginal?.nombre || sub.servicio?.nombre);
+    const ocupados = new Map();
+    for (const a of data.asignaciones || []) {
+      if (!a.activo || !a.inventario_id) continue;
+      if (!ocupados.has(a.inventario_id)) ocupados.set(a.inventario_id, new Set());
+      ocupados.get(a.inventario_id).add(Number(a.cupo_numero));
+    }
+    const diasNecesarios = (daysRemaining(sub.fecha_vencimiento) ?? -1) + Number(diasExtra || 0);
+    return (data.inventario || []).filter(cuenta => {
+      const servicioDestino = (data.servicios || []).find(s => s.id === cuenta.servicio_id);
+      const nombreDestino = baseServicio(servicioDestino?.nombre || cuenta.servicios?.nombre);
+      const mismaPlataforma = cuenta.servicio_id === sub.servicio_id ||
+        (nombreOriginal && nombreDestino && nombreOriginal === nombreDestino);
+      const cuposTotales = Number(cuenta.cupos_total || 0);
+      const ocupadosCuenta = ocupados.get(cuenta.id) || new Set();
+      const hayCupo = Array.from({length: cuposTotales}, (_, i) => i + 1)
+        .some(n => !ocupadosCuenta.has(n));
+      const diasCuenta = daysRemaining(cuenta.fecha_vencimiento);
+      return mismaPlataforma && cuenta.etiqueta !== "externa" &&
+        !["fallida", "reemplazada"].includes(cuenta.estado) &&
+        diasCuenta !== null && diasCuenta >= Math.max(0, diasNecesarios) && hayCupo;
+    });
   }
 
   async function guardarGarantiaPedido(sub, asignacion) {
@@ -1730,7 +1784,9 @@ duracion_cantidad: selectedDeliveryService.duracion_cantidad
     if (!Number.isInteger(dias) || dias < 0 || dias > 90) { setError("Selecciona entre 0 y 90 días de compensación."); return; }
     if (!form.cupo_numero || Number(form.cupo_numero) < 1) { setError("Selecciona el cupo de destino."); return; }
     const account = (data.inventario || []).find(c => c.id === form.inventario_destino_id);
-    if (!form.modo_externo && !account) { setError("Selecciona una cuenta del inventario."); return; }
+    if (!form.modo_externo && (!account || !opcionesGarantia(sub, asignacion, dias).some(x => x.id === account.id))) {
+      setError("Selecciona una cuenta con cupo libre y vencimiento suficiente para cubrir los días restantes y la compensación."); return;
+    }
     setWorking(true); setError("");
     try {
       const payload = {
@@ -1760,8 +1816,8 @@ duracion_cantidad: selectedDeliveryService.duracion_cantidad
   }
 
   function renderGarantiaPedido(sub, asignacion) {
-    const cuentas = opcionesGarantia(sub, asignacion);
     const form = pedidoGarantiaForm;
+    const cuentas = opcionesGarantia(sub, asignacion, Number(form.dias_compensacion) || 0);
     const actual = (data.inventario || []).find(x => x.id === form.inventario_destino_id);
     const cupos = actual ? Array.from({length:Number(actual.cupos_total||1)},(_,i)=>i+1).filter(n=>
       !(data.asignaciones||[]).some(a=>a.activo && a.id!==asignacion.id && a.inventario_id===actual.id && Number(a.cupo_numero)===n)
@@ -1789,8 +1845,8 @@ duracion_cantidad: selectedDeliveryService.duracion_cantidad
           {!form.modo_externo ? <>
             <label style={fieldStyle}>Cuenta de destino
               <select style={controlStyle} value={form.inventario_destino_id} onChange={e=>setPedidoGarantiaForm(prev=>({...prev,inventario_destino_id:e.target.value,cupo_numero:""}))}>
-                <option value="">Selecciona cuenta</option>
-                {cuentas.map(c=><option key={c.id} value={c.id}>{c.correo || c.grupo || "Cuenta"} · {c.id===asignacion.inventario_id?"Actual":"Otra cuenta"}</option>)}
+                <option value="">{cuentas.length ? "Selecciona cuenta disponible" : "No hay cuentas con cupo y vigencia suficientes"}</option>
+                {cuentas.map(c=><option key={c.id} value={c.id}>{c.correo || c.grupo || "Cuenta"} · {c.id===asignacion.inventario_id?"Actual":"Otra cuenta"} · {Number(c.cupos_total || 0) - new Set((data.asignaciones || []).filter(a=>a.activo && a.inventario_id===c.id).map(a=>Number(a.cupo_numero))).size} libre(s)</option>)}
               </select>
             </label>
             <label style={fieldStyle}>Perfil / cupo libre
@@ -2637,7 +2693,7 @@ if (cambiarCuenta && (!nuevoInventarioId || !nuevoCupo)) {
     const cliente = sub.cliente?.nombre || sub.cliente?.username || "Cliente";
     const service = sub.servicio;
     const durationLabel = inventoryDurationText(item);
-    const provider = providerInitials(item) || (latest.proveedores || []).find((p) => p.id === item.proveedor_id)?.iniciales || "";
+    const provider = providerNameForSaleMessage(providerInitials(item) || (latest.proveedores || []).find((p) => p.id === item.proveedor_id)?.iniciales || "");
     const cupo = Number(assignmentData.cupo_numero || 1);
     const pin = item.perfiles_pins?.[String(cupo)] || item.pin || "";
     const plantilla = (latest.plantillas_mensajes || []).find((entry) => {
@@ -3682,7 +3738,7 @@ Cuenta para renovación
                 <label>Proveedor (opcional)
                   <select value={externalOrderForm.proveedor_id} onChange={(e) => setExternalOrderForm((prev) => ({ ...prev, proveedor_id: e.target.value }))}>
                     <option value="">Sin proveedor</option>
-                    {(data.proveedores || []).filter((provider) => provider.activo !== false).map((provider) => <option key={provider.id} value={provider.id}>{provider.iniciales}</option>)}
+                    {(data.proveedores || []).filter((provider) => provider.activo !== false).map((provider) => <option key={provider.id} value={provider.id}>{provider.iniciales || provider.nombre || "Proveedor"}{provider.plataforma ? ` (${provider.plataforma})` : ""}</option>)}
                   </select>
                 </label>
                 {!(isYoutubeService(selectedService) && youtubeExternalMode === "grupo") && (
@@ -4001,7 +4057,7 @@ Solo aparecen cuentas con 1 día o más restante.
 {renderAccountsTable(filtered, "No hay cuentas activas.")}
         {pedidoGarantiaMensaje && <div className="card" style={{marginTop:12,border:"1px solid #2580c1",background:"#071d35"}}>
           <h3>✅ Garantía realizada · Mensaje para el cliente</h3>
-          <textarea readOnly rows={10} style={{width:"100%"}} value={pedidoGarantiaMensaje.texto} />
+          <textarea readOnly rows={10} style={{width:"100%",background:"#082543",color:"#d8efff",border:"1px solid #2580c1",borderRadius:10,padding:12}} value={pedidoGarantiaMensaje.texto} />
           <div className="inlineActions">
             <button type="button" className="miniButton primaryMini" onClick={()=>copyText(pedidoGarantiaMensaje.texto)}>📋 Copiar mensaje</button>
             <button type="button" className="miniButton" onClick={()=>{ const url=whatsappUrl(pedidoGarantiaMensaje.cliente?.telefono,""); if(url) window.open(url,"_blank","noopener,noreferrer"); else setError("El cliente no tiene WhatsApp configurado."); }}>💬 Abrir WhatsApp</button>
@@ -5479,6 +5535,14 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
           </div>
         </div>
 
+        <style>{`
+          .jcProviderActions {display:flex;gap:7px;justify-content:flex-end;align-items:center;flex-wrap:wrap;}
+          .jcProviderEditForm {display:flex;align-items:center;flex-wrap:wrap;gap:8px;flex:1;min-width:180px;}
+          .jcProviderEditForm input {width:130px;min-width:90px;max-width:100%;border:1px solid #5caae7;border-radius:9px;padding:9px 10px;color:#f8fcff;background:#102f52;}
+          .jcProviderEditForm input:nth-child(2) {width:190px;flex:1;}
+          .numberProfilesTest input:focus,.inventoryEditPanel input:focus {outline:2px solid #39a9f3;outline-offset:1px;}
+          @media(max-width:650px){.jcProviderEditForm {flex-basis:100%;}.jcProviderActions {justify-content:flex-start;}}
+        `}</style>
         <div className="inventorySubtabs" role="tablist" aria-label="Secciones de inventario">
           <button type="button" className={inventoryTab === "proveedores" ? "active" : ""} onClick={() => setInventoryTab("proveedores")}>Proveedores</button>
           <button type="button" className={inventoryTab === "cuentas" ? "active" : ""} onClick={() => setInventoryTab("cuentas")}>Añadir cuentas</button>
@@ -5488,9 +5552,10 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
 
         {inventoryTab === "proveedores" && (
           <section className="providerManager card inventoryStandalone">
-            <div className="formSectionTitle"><span>P</span><div><h2>Proveedores</h2><p>Agrega solo las iniciales, por ejemplo GP, J o AXM.</p></div></div>
-            <form className="providerQuickForm" onSubmit={createProvider}>
-              <input maxLength={8} placeholder="Iniciales (ej. GP)" value={providerForm.iniciales} onChange={(e) => setProviderForm({ iniciales: e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "") })} required />
+            <div className="formSectionTitle"><span>P</span><div><h2>Proveedores</h2><p>Agrega sus iniciales y escribe de qué plataforma proviene.</p></div></div>
+            <form className="providerQuickForm" onSubmit={createProvider} style={{display:"flex",flexWrap:"wrap",gap:10,alignItems:"center"}}>
+              <input style={{flex:"1 1 140px",minWidth:0}} maxLength={8} placeholder="Iniciales (ej. DJG)" value={providerForm.iniciales} onChange={(e) => setProviderForm(prev=>({...prev, iniciales: e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "")}))} required />
+              <input style={{flex:"2 1 220px",minWidth:0}} maxLength={80} placeholder="Plataforma (ej. Netflix)" value={providerForm.plataforma} onChange={(e) => setProviderForm(prev=>({...prev, plataforma:e.target.value}))} required />
               <button className="miniButton primaryMini" disabled={working}>Agregar proveedor</button>
             </form>
 
@@ -5501,7 +5566,7 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
   onChange={(e) => setProviderSearch(e.target.value)}
 />
 
-            {bulkDeleteBar("proveedores", (data.proveedores || []).filter((provider) => provider.activo !== false && String(provider.iniciales || "").toLowerCase().includes(providerSearch.toLowerCase())).map((provider) => provider.id), "/api/admin/proveedores", "proveedor")}
+            {bulkDeleteBar("proveedores", (data.proveedores || []).filter((provider) => provider.activo !== false && `${provider.iniciales || ""} ${provider.plataforma || ""}`.toLowerCase().includes(providerSearch.toLowerCase())).map((provider) => provider.id), "/api/admin/proveedores", "proveedor")}
             <div className="providerList">
               <div className="providerListHead"><span>{deleteMode["proveedores"] ? "Seleccionar / Iniciales" : "Iniciales"}</span><span>Acción</span></div>
              
@@ -5509,16 +5574,26 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
               {(data.proveedores || [])
 .filter((provider) => provider.activo !== false)
 .filter((provider) =>
-  provider.iniciales
+  `${provider.iniciales || ""} ${provider.plataforma || ""}`
     .toLowerCase()
     .includes(providerSearch.toLowerCase())
 )
 .map((provider) => (
                 <div className="providerListRow" key={provider.id}>
                   {deleteMode["proveedores"] ? (
-                    <label className="providerSelectLabel"><input type="checkbox" checked={selectedDeleteIds("proveedores").includes(provider.id)} onChange={() => toggleDeleteSelection("proveedores", provider.id)} /><strong>{provider.iniciales}</strong></label>
-                  ) : <strong>{provider.iniciales}</strong>}
-                  <button type="button" className="miniButton dangerMini" onClick={() => beginDeleteSelection("proveedores", provider.id)}>Quitar</button>
+                    <label className="providerSelectLabel"><input type="checkbox" checked={selectedDeleteIds("proveedores").includes(provider.id)} onChange={() => toggleDeleteSelection("proveedores", provider.id)} /><strong>{provider.iniciales}{provider.plataforma ? ` (${provider.plataforma})` : ""}</strong></label>
+                  ) : editingProviderId === provider.id ? (
+                    <form className="jcProviderEditForm" onSubmit={saveProviderEdit}>
+                      <input aria-label="Editar iniciales del proveedor" maxLength={8} required value={providerEditForm.iniciales} onChange={(e) => setProviderEditForm(prev => ({ ...prev, iniciales: e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "") }))} placeholder="Iniciales" />
+                      <input aria-label="Editar plataforma del proveedor" maxLength={80} required value={providerEditForm.plataforma} onChange={(e) => setProviderEditForm(prev => ({ ...prev, plataforma: e.target.value }))} placeholder="Plataforma" />
+                      <button type="submit" className="miniButton primaryMini" disabled={working}>Guardar</button>
+                      <button type="button" className="miniButton" onClick={() => setEditingProviderId("")}>Cancelar</button>
+                    </form>
+                  ) : <strong>{provider.iniciales}{provider.plataforma ? ` (${provider.plataforma})` : ""}</strong>}
+                  <div className="jcProviderActions">
+                    {!deleteMode["proveedores"] && editingProviderId !== provider.id && <button type="button" className="miniButton primaryMini" onClick={() => beginProviderEdit(provider)}>✏️ Editar</button>}
+                    <button type="button" className="miniButton dangerMini" onClick={() => beginDeleteSelection("proveedores", provider.id)}>Quitar</button>
+                  </div>
                 </div>
               ))}
               {(data.proveedores || []).filter((provider) => provider.activo !== false).length === 0 && <div className="emptyInline">Agrega tu primer proveedor.</div>}
@@ -5598,7 +5673,7 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
     onChange={(e) =>
       setInventoryForm({
         ...inventoryForm,
-        cupos_total: e.target.value === "" ? "" : Number(e.target.value)
+        cupos_total: e.target.value
       })
     }
   />
@@ -5770,9 +5845,9 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
                 {generatedGuarantees.map((guarantee) => {
                   const wa = guarantee.cliente?.telefono ? whatsappUrl(guarantee.cliente.telefono, guarantee.text) : "";
                   return (
-                    <div className="generatedDelivery guaranteeGeneratedMessage" key={guarantee.id}>
+                    <div className="generatedDelivery guaranteeGeneratedMessage" key={guarantee.id} style={{background:"#092440",border:"1px solid #2580c1",borderRadius:12,color:"#e3f2ff"}}>
                       <div className="generatedHeader"><div><strong>{guarantee.cliente?.nombre || "Cliente"}</strong><span>Mensaje de garantía · fecha original conservada</span></div></div>
-                      <textarea readOnly value={guarantee.text} />
+                      <textarea readOnly value={guarantee.text} style={{background:"#071d35",color:"#d8efff",border:"1px solid #2580c1",borderRadius:10,padding:12}} />
                       <div className="inlineActions"><button type="button" className="miniButton primaryMini" onClick={(event) => copyText(guarantee.text, event)}>Copiar texto</button>{wa && <a className="waTableButton" href={wa} target="_blank" rel="noreferrer">Enviar por WhatsApp</a>}</div>
                     </div>
                   );
@@ -5910,7 +5985,7 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
                   )}
                   <div className="twoCols"><input placeholder="Correo / acceso" value={inventoryEditForm.correo || ""} onChange={(e) => setInventoryEditForm({ ...inventoryEditForm, correo: e.target.value })} /><input placeholder="Grupo (Gemini)" value={inventoryEditForm.grupo || ""} onChange={(e) => setInventoryEditForm({ ...inventoryEditForm, grupo: e.target.value })} /></div>
                   <div className="twoCols"><input placeholder="Clave" value={inventoryEditForm.clave || ""} onChange={(e) => setInventoryEditForm({ ...inventoryEditForm, clave: e.target.value })} /><label>Cantidad de tiempo<input type="number" onWheel={bloquearScrollNumerico} min="1" max={inventoryEditForm.duracion_tipo === "dias" ? 30 : undefined} value={inventoryEditForm.duracion_cantidad || 1} onChange={(e) => setInventoryEditForm({ ...inventoryEditForm, duracion_cantidad: e.target.value })} /></label></div>
-                  <label>Cupos / perfiles<input type="number" onWheel={bloquearScrollNumerico} min="1" max="50" value={inventoryEditForm.cupos_total || 1} onChange={(e) => setInventoryEditForm({ ...inventoryEditForm, cupos_total: e.target.value })} /></label>
+                  <label>Cupos / perfiles<input type="number" onWheel={bloquearScrollNumerico} min="1" max="50" value={inventoryEditForm.cupos_total ?? ""} onChange={(e) => setInventoryEditForm({ ...inventoryEditForm, cupos_total: e.target.value })} /></label>
                   {editType === "estandar" && (
                     <div className="profilePinsBox">
                       <div className="profilePinsTitle"><strong>PIN por perfil</strong><span>Edita cada PIN de forma independiente.</span></div>
