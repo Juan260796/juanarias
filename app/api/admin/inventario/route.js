@@ -80,7 +80,7 @@ async function getService(supabase, servicioId) {
 
 async function recalcInventoryState(supabase, inventarioId) {
   const { data: item } = await supabase.from("inventario_cuentas").select("id,cupos_total,estado").eq("id", inventarioId).single();
-  if (!item || item.estado === "fallida" || item.estado === "reemplazada") return;
+  if (!item || item.estado === "fallida" || item.estado === "reemplazada" || item.estado === "retirada") return;
   const { count } = await supabase.from("inventario_asignaciones").select("id", { count: "exact", head: true }).eq("inventario_id", inventarioId).eq("activo", true);
   const estado = (count || 0) >= Number(item.cupos_total || 1) ? "agotada" : "disponible";
   await supabase.from("inventario_cuentas").update({ estado }).eq("id", inventarioId);
@@ -93,7 +93,7 @@ async function validateAssignment(supabase, inventarioId, suscripcionId, cupoNum
   ]);
   if (itemError || !item) return { error: itemError?.message || "Cuenta no encontrada." };
   if (subError || !sub) return { error: subError?.message || "Pedido no encontrado." };
-  if (["fallida", "reemplazada"].includes(item.estado)) return { error: "Esa cuenta no está disponible para nuevas entregas." };
+  if (["fallida", "reemplazada", "retirada"].includes(item.estado)) return { error: "Esa cuenta no está disponible para nuevas entregas." };
   if (item.fecha_vencimiento && item.fecha_vencimiento <= todayISO()) return { error: "La cuenta principal ya venció. Actualiza su vigencia antes de asignar nuevos cupos." };
   if (item.servicio_id !== sub.servicio_id) return { error: "La cuenta no corresponde al servicio del pedido." };
   const cupo = Number(cupoNumero);
@@ -110,7 +110,7 @@ async function validateInventorySlot(supabase, inventarioId, cupoNumero) {
     .eq("id", inventarioId)
     .single();
   if (itemError || !item) return { error: itemError?.message || "Cuenta no encontrada." };
-  if (["fallida", "reemplazada"].includes(item.estado)) return { error: "Esa cuenta no está disponible para nuevas entregas." };
+  if (["fallida", "reemplazada", "retirada"].includes(item.estado)) return { error: "Esa cuenta no está disponible para nuevas entregas." };
   if (item.fecha_vencimiento && item.fecha_vencimiento <= todayISO()) return { error: "La cuenta principal ya venció. Actualiza su vigencia antes de asignar nuevos cupos." };
   const cupo = Number(cupoNumero);
   if (!Number.isInteger(cupo) || cupo < 1 || cupo > Number(item.cupos_total || 1)) {
@@ -226,7 +226,7 @@ export async function PATCH(request) {
       const { data: found, error: destinationError } = await auth.supabase
         .from("inventario_cuentas").select("*").eq("id", destinationId).single();
       if (destinationError || !found) return Response.json({ error: "Grupo familiar de destino no encontrado." }, { status: 404 });
-      if (found.servicio_id !== account.servicio_id || !found.grupo || found.etiqueta === "externa" || ["fallida", "reemplazada"].includes(found.estado)) {
+      if (found.servicio_id !== account.servicio_id || !found.grupo || found.etiqueta === "externa" || ["fallida", "reemplazada", "retirada"].includes(found.estado)) {
         return Response.json({ error: "Selecciona un grupo familiar disponible del mismo servicio." }, { status: 400 });
       }
       destination = found;
@@ -296,6 +296,44 @@ export async function PATCH(request) {
     if (destinationId !== id) await recalcInventoryState(auth.supabase, destinationId);
     await syncOrderMembership(auth.supabase, assignment.suscripcion_id);
     return Response.json({ asignacion: updatedAssignment });
+  }
+
+  if (action === "retirar_cuenta") {
+    const { data: account, error: accountError } = await auth.supabase.from("inventario_cuentas")
+      .select("id,estado,etiqueta").eq("id", id).maybeSingle();
+    if (accountError || !account) return Response.json({ error: accountError?.message || "Cuenta no encontrada." }, { status: 404 });
+    if (account.etiqueta === "externa") return Response.json({ error: "Las cuentas externas no forman parte del stock administrado." }, { status: 400 });
+    const { count, error: countError } = await auth.supabase.from("inventario_asignaciones")
+      .select("id", { count: "exact", head: true }).eq("inventario_id", id).eq("activo", true);
+    if (countError) return Response.json({ error: countError.message }, { status: 500 });
+    if (count > 0) return Response.json({ error: "Aún hay clientes asignados. Libera sus cupos antes de retirar esta cuenta." }, { status: 409 });
+    // No uses .single() en UPDATE: PostgREST puede devolver cero filas cuando
+    // una política RLS filtra el resultado, incluso si la operación no falla.
+    const { error: updateError } = await auth.supabase.from("inventario_cuentas")
+      .update({ estado: "retirada" }).eq("id", id);
+    if (updateError) {
+      return Response.json({
+        error: "No se pudo retirar la cuenta: " + updateError.message +
+          ". Verifica que la migración MIGRACION_RETIRO_STOCK.sql esté aplicada y que la conexión del servidor tenga permiso UPDATE."
+      }, { status: 400 });
+    }
+    // No anunciar éxito sin comprobar que la fila realmente cambió de estado.
+    const { data: updatedAccount, error: verifyError } = await auth.supabase
+      .from("inventario_cuentas")
+      .select("id,estado")
+      .eq("id", id)
+      .maybeSingle();
+    if (verifyError || !updatedAccount) {
+      return Response.json({
+        error: "No se pudo confirmar el retiro de la cuenta. Revisa los permisos SELECT/UPDATE y las políticas RLS de inventario_cuentas en Supabase. " + (verifyError?.message || "La cuenta no es visible para la conexión del servidor.")
+      }, { status: 500 });
+    }
+    if (updatedAccount.estado !== "retirada") {
+      return Response.json({
+        error: "La cuenta sigue con estado '" + updatedAccount.estado + "'. No se modificó el inventario: revisa los permisos UPDATE/RLS en inventario_cuentas."
+      }, { status: 409 });
+    }
+    return Response.json({ cuenta: updatedAccount });
   }
 
   if (action === "renovar_cuenta") {
@@ -445,7 +483,7 @@ const changes = {
     if (oldItemError || !oldItem) return Response.json({ error: oldItemError?.message || "Cuenta anterior no encontrada." }, { status: 404 });
     if (newItemError || !newItem) return Response.json({ error: newItemError?.message || "Cuenta nueva no encontrada." }, { status: 404 });
     if (oldItem.servicio_id !== newItem.servicio_id) return Response.json({ error: "La cuenta de garantía debe ser del mismo servicio." }, { status: 400 });
-    if (["fallida", "reemplazada"].includes(newItem.estado)) return Response.json({ error: "La cuenta nueva no está disponible para garantías." }, { status: 400 });
+    if (["fallida", "reemplazada", "retirada"].includes(newItem.estado)) return Response.json({ error: "La cuenta nueva no está disponible para garantías." }, { status: 400 });
 
     const [{ data: oldAssignments, error: oldAssignmentsError }, { data: newAssignments, error: newAssignmentsError }] = await Promise.all([
       auth.supabase.from("inventario_asignaciones").select("*").eq("inventario_id", oldInventoryId).eq("activo", true).order("cupo_numero", { ascending: true }),
@@ -581,6 +619,8 @@ const changes = {
   }
 
   if (action === "reactivar") {
+    const { data: currentState } = await auth.supabase.from("inventario_cuentas").select("estado").eq("id", id).maybeSingle();
+    if (currentState?.estado === "retirada") return Response.json({ error: "La cuenta está archivada fuera del stock." }, { status: 409 });
     await auth.supabase.from("inventario_cuentas").update({ estado: "disponible" }).eq("id", id);
     await recalcInventoryState(auth.supabase, id);
     const { data } = await auth.supabase.from("inventario_cuentas").select("*").eq("id", id).single();
