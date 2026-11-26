@@ -12,28 +12,17 @@ function colombiaDate() {
   return `${date.year}-${date.month}-${date.day}`;
 }
 
-function utcRangeForBogotaDay(fecha) {
-  // Colombia UTC-5 todo el año. Los registros se filtran por created_at,
-  // nunca por fecha de inicio/vencimiento (que puede ser retroactiva).
-  return { start: `${fecha}T05:00:00.000Z`, end: `${fechaSiguiente(fecha)}T05:00:00.000Z` };
-}
-
-function fechaSiguiente(fecha) {
-  const d = new Date(`${fecha}T00:00:00Z`);
-  d.setUTCDate(d.getUTCDate() + 1);
-  return d.toISOString().slice(0, 10);
-}
-
+// La fecha del sorteo se compara con la fecha elegida al vender o renovar,
+// no con created_at: registrar hoy una compra de otro día no da cupos hoy.
 async function getEntries(supabase, fecha) {
-  const { start, end } = utcRangeForBogotaDay(fecha);
   const [ordersRes, renewalsRes] = await Promise.all([
     supabase.from("suscripciones")
-      .select("id,cliente_id,excluido_conteo,created_at,clientes(id,nombre,telefono)")
-      .gte("created_at", start).lt("created_at", end)
+      .select("id,cliente_id,excluido_conteo,fecha_inicio,created_at,clientes(id,nombre,telefono)")
+      .eq("fecha_inicio", fecha)
       .order("created_at", { ascending: true }),
     supabase.from("ganancias_renovaciones")
-      .select("id,cliente_id,cliente_nombre,created_at")
-      .gte("created_at", start).lt("created_at", end)
+      .select("id,cliente_id,cliente_nombre,fecha_ganancia,created_at")
+      .eq("fecha_ganancia", fecha)
       .order("created_at", { ascending: true })
   ]);
   if (ordersRes.error) throw new Error(`No se pudieron consultar las compras: ${ordersRes.error.message}`);
