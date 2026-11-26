@@ -289,6 +289,7 @@ const VIEW_TITLES = {
   ganancias: "Ganancias",
   clientes: "Clientes",
   promociones: "Promociones diarias",
+  sorteos: "Sorteos diarios",
   inventario: "Inventario / Streaming",
   crearCliente: "Crear cliente",
   crearStreaming: "Crear servicio streaming",
@@ -434,6 +435,10 @@ export default function Admin() {
   const [error, setError] = useState("");
   const [view, setView] = useState("pedido");
   const [menuOpen, setMenuOpen] = useState(false);
+  const [sorteoInfo, setSorteoInfo] = useState(null);
+  const [sorteoCargando, setSorteoCargando] = useState(false);
+  const [sorteoGirando, setSorteoGirando] = useState(false);
+  const [sorteoRevelado, setSorteoRevelado] = useState(false);
   const [clientQuery, setClientQuery] = useState("");
   const [showClientMatches, setShowClientMatches] = useState(false);
   const [serviceQuery, setServiceQuery] = useState("");
@@ -484,6 +489,8 @@ const [profitEditValue, setProfitEditValue] = useState("");
   const [renewExternalDetails, setRenewExternalDetails] = useState({});
   const [inventoryRenewalDrafts, setInventoryRenewalDrafts] = useState({});
   const [inventoryRenewMenuId, setInventoryRenewMenuId] = useState("");
+  const [lastSlotDecision, setLastSlotDecision] = useState(null);
+  const [lastSlotDuration, setLastSlotDuration] = useState({ tipo: "dias", cantidad: "30" });
   const [promoForm, setPromoForm] = useState({ titulo: "", descripcion: "", precio: "", fecha_inicio: todayISO(), fecha_fin: todayISO(), activo: true });
   const [editingPromotionId, setEditingPromotionId] = useState("");
   const [promotionTab, setPromotionTab] = useState("promociones");
@@ -2272,6 +2279,74 @@ duracion_cantidad: selectedDeliveryService.duracion_cantidad
     if (typeof window !== "undefined") window.scrollTo({top:0, behavior:"smooth"});
   }
 
+  // La fecha del último cliente es la referencia para gestionar el cierre del stock.
+  // No altera la fecha de compra ni el vencimiento histórico de cada pedido.
+  function lastClientExpiry(inventoryId) {
+    const subscriptions = new Map(enrichedSubs.map(sub => [sub.id, sub]));
+    const dates = (data.asignaciones || [])
+      .filter(a => a.activo === true && a.inventario_id === inventoryId)
+      .map(a => subscriptions.get(a.suscripcion_id)?.fecha_vencimiento)
+      .filter(Boolean);
+    return dates.length ? dates.sort().at(-1) : null;
+  }
+
+  function requestInventoryNoticeRelease(assignment, sub, account) {
+    const activeCount = (data.asignaciones || []).filter(a => a.activo === true && a.inventario_id === assignment.inventario_id).length;
+    if (activeCount > 1 || !account || account.etiqueta === "externa") {
+      markInventoryNoticeManaged(assignment, sub, "retirado");
+      return;
+    }
+    // Al liberar el último cliente no se decide automáticamente borrar o renovar.
+    setLastSlotDecision({ assignment, sub, account });
+    setLastSlotDuration({ tipo: "dias", cantidad: "30" });
+  }
+
+  async function completeLastSlotDecision(action) {
+    if (!lastSlotDecision || working) return;
+    const { assignment, sub, account } = lastSlotDecision;
+    const qty = Number(lastSlotDuration.cantidad);
+    if (action === "renovar" && (!Number.isInteger(qty) || qty < 1 || (lastSlotDuration.tipo === "dias" && qty > 30))) {
+      setError("Para renovar, escribe entre 1 y 30 días o una cantidad válida de meses.");
+      return;
+    }
+    setWorking(true);
+    setError("");
+    setMessage("");
+    const key = `${assignment.id}:${sub.fecha_vencimiento}`;
+    let released = false;
+    try {
+      await api("/api/admin/avisos-inventario", {
+        method: "POST",
+        body: JSON.stringify({ asignacion_id: assignment.id, suscripcion_id: sub.id, fecha_vencimiento: sub.fecha_vencimiento, tipo_gestion: "retirado" })
+      });
+      released = true;
+      if (action === "renovar") {
+        await api("/api/admin/inventario", {
+          method: "PATCH",
+          body: JSON.stringify({ id: account.id, action: "renovar_cuenta", tipo: lastSlotDuration.tipo, cantidad: qty })
+        });
+      } else if (action === "eliminar") {
+        // Retiro lógico: no borrar las asignaciones históricas de los pedidos.
+        await api("/api/admin/inventario", { method: "PATCH", body: JSON.stringify({ id: account.id, action: "retirar_cuenta" }) });
+      }
+      setManagedInventoryNotices(prev => [...new Set([...prev, key])]);
+      setSelectedInventoryNotices(prev => prev.filter(v => v !== key));
+      setLastSlotDecision(null);
+      await refresh();
+      setMessage(action === "renovar" ? "Último cupo liberado. Cuenta completa renovada y disponible en stock. Se conserva el historial de pedidos y ganancias." : action === "eliminar" ? "Último cupo liberado y cuenta archivada fuera del stock. Se conserva el historial de pedidos y ganancias." : "Último cupo liberado. La cuenta sigue en stock para decidir luego si renovarla o eliminarla.");
+    } catch (e) {
+      if (released) {
+        setLastSlotDecision(null);
+        await refresh().catch(() => {});
+        setError(`El último cupo fue liberado, pero no se pudo ${action === "renovar" ? "renovar" : "eliminar"} la cuenta: ${e.message}. Puedes gestionarla desde Cuentas Streaming.`);
+      } else {
+        setError(e.message);
+      }
+    } finally {
+      setWorking(false);
+    }
+  }
+
   async function markInventoryNoticeManaged(assignment, sub, tipoGestion = "retirado") {
     const clave = `${assignment.id}:${sub.fecha_vencimiento}`;
     await runAction(async () => {
@@ -2294,6 +2369,16 @@ duracion_cantidad: selectedDeliveryService.duracion_cantidad
       selectedInventoryNotices.includes(`${assignment.id}:${sub.fecha_vencimiento}`)
     );
     if (!selected.length || working) return;
+    const remainingPerAccount = {};
+    for (const a of data.asignaciones || []) {
+      if (a.activo === true) remainingPerAccount[a.inventario_id] = (remainingPerAccount[a.inventario_id] || 0) + 1;
+    }
+    const selectedPerAccount = {};
+    for (const { assignment } of selected) selectedPerAccount[assignment.inventario_id] = (selectedPerAccount[assignment.inventario_id] || 0) + 1;
+    if (Object.entries(selectedPerAccount).some(([id, count]) => count >= (remainingPerAccount[id] || 0))) {
+      setError("La selección incluye el último cupo de una cuenta. Gestiona esos últimos cupos individualmente para elegir Renovar cuenta completa o Eliminar cuenta.");
+      return;
+    }
     setWorking(true);
     setError("");
     setMessage("");
@@ -2864,6 +2949,7 @@ if (cambiarCuenta && (!nuevoInventarioId || !nuevoCupo)) {
     setDeleteMode({});
     setDeleteSelection({ suscripciones: [], clientes: [], servicios: [], promociones: [], proveedores: [], inventario: [] });
     setView(nextView);
+    if (nextView === "sorteos") cargarSorteo();
     if (typeof window !== "undefined") {
       const url = new URL(window.location.href);
       url.searchParams.set("section", nextView);
@@ -5229,6 +5315,59 @@ async function saveProfitEdit(item) {
     </>;
   }
 
+  async function cargarSorteo() {
+    setSorteoCargando(true);
+    try {
+      const result = await api("/api/admin/sorteos");
+      setSorteoInfo(result);
+      setSorteoRevelado(Boolean(result.sorteo));
+    } catch (err) { setError(err.message); }
+    finally { setSorteoCargando(false); }
+  }
+
+  async function girarSorteo() {
+    if (sorteoGirando || sorteoCargando) return;
+    setSorteoGirando(true);
+    setSorteoRevelado(false);
+    try {
+      const result = await api("/api/admin/sorteos", { method: "POST", body: JSON.stringify({}) });
+      setSorteoInfo(result);
+      // La ruleta es la animación; el servidor selecciona y guarda a los ganadores.
+      await new Promise((resolve) => setTimeout(resolve, 3200));
+      setSorteoRevelado(true);
+    } catch (err) { setError(err.message); }
+    finally { setSorteoGirando(false); }
+  }
+
+  function mensajeGanador(ganador, numero) {
+    return `🎉 ¡Felicidades, ${ganador.nombre}! 🎉\n\nHas sido seleccionado(a) como ganador(a) #${numero} del sorteo diario de Juan Cuentas. 🏆\n\nGracias por tus compras y por confiar en nosotros. 💙\n\nEscríbenos para coordinar la entrega de tu premio.`;
+  }
+
+  function renderSorteos() {
+    const info = sorteoInfo;
+    const ganadores = sorteoRevelado ? (info?.sorteo?.ganadores || []) : [];
+    return <section className="jcSorteosPage">
+      <div className="pageTitle"><div><h1>🎡 Sorteos diarios</h1><p className="pageLead">Cada servicio comprado hoy suma una participación. Dos ganadores diferentes por día.</p></div></div>
+      <div className="card jcSorteosCard">
+        <div className="jcSorteosHeader"><strong>📅 Sorteo del {info?.fecha || "día de hoy"}</strong><button type="button" className="miniButton" disabled={sorteoCargando || sorteoGirando} onClick={cargarSorteo}>↻ Actualizar</button></div>
+        <div className="jcSorteosStats"><span>🎟️ <strong>{info?.participaciones ?? "—"}</strong> participaciones</span><span>👥 <strong>{info?.clientes_elegibles ?? "—"}</strong> clientes</span><span>🏆 <strong>2</strong> ganadores</span></div>
+        <div className={`jcSorteosWheel ${sorteoGirando ? "jcSorteosWheelSpin" : ""}`} aria-label="Ruleta de sorteo"><div className="jcSorteosWheelCircle"><span>🎁</span><b>JUAN CUENTAS</b><small>SORTEO DIARIO</small></div><div className="jcSorteosWheelPointer">▼</div></div>
+        <p className="muted jcSorteosHint">Las compras se contabilizan por su registro real (hora Colombia). No se mezclan compras de otros días ni participan pedidos de prueba.</p>
+        {!info && <button type="button" className="miniButton primaryMini" disabled={sorteoCargando} onClick={cargarSorteo}>{sorteoCargando ? "Cargando..." : "Consultar participantes"}</button>}
+        {info && !info.sorteo && <button type="button" className="miniButton primaryMini jcSorteosGo" disabled={sorteoGirando || sorteoCargando || info.clientes_elegibles < 2} onClick={girarSorteo}>{sorteoGirando ? "🎡 Girando ruleta..." : "🎡 Girar y elegir 2 ganadores"}</button>}
+        {info?.sorteo && !sorteoGirando && <p className="jcSorteosStored">✅ Sorteo realizado y guardado. Los ganadores de hoy no cambiarán.</p>}
+        {info && info.clientes_elegibles < 2 && !info.sorteo && <p className="muted">Se necesitan al menos dos clientes diferentes con compras registradas hoy.</p>}
+      </div>
+      {ganadores.length > 0 && <div className="jcSorteosWinners">{ganadores.map((ganador, index) => <div className="card jcSorteosWinner" key={ganador.cliente_id}>
+        <h3>🏆 Ganador {index + 1}: {ganador.nombre}</h3><p className="muted">Participaciones acumuladas hoy: {ganador.cupos}</p>
+        <textarea className="jcSorteosMessage" readOnly rows={7} value={mensajeGanador(ganador, index + 1)} aria-label={`Mensaje ganador ${index + 1}`} />
+        <div className="jcSorteosActions"><button type="button" className="miniButton primaryMini" onClick={async () => {try {await navigator.clipboard.writeText(mensajeGanador(ganador,index + 1)); setMessage("Mensaje copiado.");} catch {setError("No fue posible copiar el mensaje.");}}}>📋 Copiar mensaje</button>
+        {whatsappNumber(ganador.telefono) && <a className="miniButton" target="_blank" rel="noopener noreferrer" href={`https://wa.me/${whatsappNumber(ganador.telefono)}?text=${encodeURIComponent(mensajeGanador(ganador,index + 1))}`}>Enviar por WhatsApp</a>}</div>
+      </div>)}</div>}
+      {info?.participantes?.length > 0 && <details className="card jcSorteosList"><summary>Ver participantes de hoy ({info.participantes.length})</summary><div className="jcSorteosEntries">{info.participantes.map(item => <div key={item.cliente_id}><span>{item.nombre}</span><b>{item.cupos} {item.cupos === 1 ? "cupo" : "cupos"}</b></div>)}</div></details>}
+    </section>;
+  }
+
   function renderPromociones() {
     const filteredPromotions = (data.promociones || []).filter((promo) =>
       String(promo.titulo || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
@@ -6017,6 +6156,7 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
                       const guaranteeSource = guaranteeSourceAccount(item);
                       const displayState = item.estado === "fallida" ? "fallida" : guaranteeSource ? "cuenta de garantía" : (used >= Number(item.cupos_total || 1) ? "agotada" : "disponible");
                       const pinEntries = Object.entries(item.perfiles_pins || {}).filter(([, value]) => String(value || "").trim());
+                      const ultimoClienteVence = lastClientExpiry(item.id);
                       return (
                         <tr key={item.id}>
                           {deleteMode["inventario"] && (
@@ -6025,8 +6165,8 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
                           <td><strong>{inventoryServiceLabel(service)}</strong><small>{deliveryTypeLabel(service?.tipo_entrega)}</small></td>
                           <td><span className="providerBadge">{providerInitials(item) || "—"}</span></td>
                           <td><strong>{item.grupo || item.correo || "—"}</strong>{item.clave && <details><summary>Ver clave</summary><code>{item.clave}</code></details>}{pinEntries.length > 0 && <details><summary>PIN por perfil</summary>{pinEntries.map(([profile, pin]) => <small key={profile}>Perfil {profile}: <b>{pin}</b></small>)}</details>}</td>
-                          <td><strong>{formatDate(item.fecha_vencimiento)}</strong><small>{inventoryDurationText(item)}</small></td>
-                          <td><span className={`daysBadge ${daysTone(daysRemaining(item.fecha_vencimiento))}`}>{remainingText(daysRemaining(item.fecha_vencimiento))}</span></td>
+                          <td><strong>{formatDate(ultimoClienteVence || item.fecha_vencimiento)}</strong><small>{ultimoClienteVence ? "Último cliente asignado" : "Vencimiento original de la cuenta"}</small><small>{inventoryDurationText(item)}</small></td>
+                          <td><span className={`daysBadge ${daysTone(daysRemaining(ultimoClienteVence || item.fecha_vencimiento))}`}>{remainingText(daysRemaining(ultimoClienteVence || item.fecha_vencimiento))}</span></td>
                           <td><strong>{used}/{item.cupos_total}</strong><small>{Math.max(0, Number(item.cupos_total || 1) - used)} libres</small></td>
                           <td><span className={displayState === "cuenta de garantía" ? "status guaranteeStatus" : displayState === "fallida" ? "status off" : displayState === "agotada" ? "status assignedStatus" : "status ok"}>{displayState}</span>{guaranteeSource && <small className="guaranteeSourceText">cambio por {guaranteeSource.grupo || guaranteeSource.correo || "cuenta anterior"}</small>}</td>
                           <td>
@@ -6189,6 +6329,7 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
           <button className={view === "vencidas" ? "active" : ""} onClick={() => navigate("vencidas")}><NavIcon name="expired" /><span className="navText">Cuentas vencidas</span><b className="expiredCount" title="Pedidos vencidos pendientes de reporte WhatsApp o liberación de cupo">{stats.vencidos}</b></button>
           <button className={view === "ganancias" ? "active" : ""} onClick={() => navigate("ganancias")}><NavIcon name="profit" /><span className="navText">Ganancias</span></button>
           <button className={view === "clientes" ? "active" : ""} onClick={() => navigate("clientes")}><NavIcon name="clients" /><span className="navText">Clientes</span><b>{stats.clientes}</b></button>
+          <button className={view === "sorteos" ? "active" : ""} onClick={() => navigate("sorteos")}><NavIcon name="gift" /><span className="navText">Sorteos</span></button>
           <button className={view === "promociones" ? "active" : ""} onClick={() => navigate("promociones")}><NavIcon name="gift" /><span className="navText">Promociones</span><b>{todayPromotions.length}</b></button>
           <button className={view === "inventario" ? "active" : ""} onClick={() => navigate("inventario")}><NavIcon name="inventory" /><span className="navText">Inventario / Streaming</span><b>{availableInventory.length}</b></button>
           <button className={view === "dispositivos" ? "active" : ""} onClick={() => navigate("dispositivos")}><NavIcon name="inventory" /><span className="navText">Dispositivos ChatGPT</span></button>
@@ -6249,7 +6390,7 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
                           </label>
                           <small className="jcInventoryNoticeExpired">{sub.days === 0 ? "Venció hoy" : `Hace ${Math.abs(sub.days)} día(s)`}</small>
                           <div className="jcNoticeActionRow">
-                            <button type="button" className="miniButton jcNoticeManagedButton" disabled={working} onClick={() => markInventoryNoticeManaged(assignment, sub, "retirado")}>Liberado</button>
+                            <button type="button" className="miniButton jcNoticeManagedButton" disabled={working} onClick={() => requestInventoryNoticeRelease(assignment, sub, account)}>Liberado</button>
                             <button type="button" className="miniButton" disabled={working} onClick={() => openRenewalFromNotice(assignment, sub)}>Renovar mismo cliente</button>
                           </div>
                         </div>
@@ -6277,6 +6418,31 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
               </div>
             </details>
           )}
+          {lastSlotDecision && (
+            <div className="jcFinalSlotOverlay" role="presentation">
+              <div className="jcFinalSlotDialog" role="dialog" aria-modal="true" aria-label="Gestionar último cupo de cuenta">
+                <h2>Último cupo de la cuenta</h2>
+                <p>Vas a liberar el último cliente de <strong>{lastSlotDecision.account.grupo || lastSlotDecision.account.correo || "esta cuenta"}</strong>. El vencimiento de referencia es el del último cliente: <strong>{formatDate(lastSlotDecision.sub.fecha_vencimiento)}</strong>.</p>
+                <p>Selecciona qué hacer con la cuenta completa. Los pedidos y ganancias históricas se conservan.</p>
+                <div className="jcFinalSlotFields">
+                  <label>Duración para renovar
+                    <select value={lastSlotDuration.tipo} onChange={e => setLastSlotDuration({tipo:e.target.value,cantidad:e.target.value === "dias" ? "30" : "1"})} disabled={working}>
+                      <option value="dias">Días</option><option value="meses">Meses</option>
+                    </select>
+                  </label>
+                  <label>Cantidad
+                    <input type="number" min="1" max={lastSlotDuration.tipo === "dias" ? 30 : undefined} value={lastSlotDuration.cantidad} onWheel={bloquearScrollNumerico} onChange={e => setLastSlotDuration(prev => ({...prev,cantidad:e.target.value}))} disabled={working} />
+                  </label>
+                </div>
+                <div className="jcFinalSlotActions">
+                  <button type="button" className="miniButton primaryMini" disabled={working} onClick={() => completeLastSlotDecision("renovar")}>↻ Liberar y renovar cuenta completa</button>
+                  <button type="button" className="miniButton dangerMini" disabled={working} onClick={() => completeLastSlotDecision("eliminar")}>Eliminar cuenta del stock</button>
+                  <button type="button" className="miniButton" disabled={working} onClick={() => completeLastSlotDecision("solo_liberar")}>Solo liberar cupo</button>
+                  <button type="button" className="miniButton" disabled={working} onClick={() => setLastSlotDecision(null)}>Cancelar</button>
+                </div>
+              </div>
+            </div>
+          )}
           {view === "pedido" && renderPedido()}
           {view === "renovar" && renderRenovacionDesdeAviso()}
           {view === "activas" && renderActivas()}
@@ -6284,6 +6450,7 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
           {view === "ganancias" && renderGanancias()}
           {view === "clientes" && renderClientes()}
           {view === "promociones" && renderPromociones()}
+          {view === "sorteos" && renderSorteos()}
           {view === "inventario" && renderInventario()}
           {view === "crearCliente" && renderCrearCliente()}
           {view === "crearStreaming" && renderCrearStreaming()}
@@ -6294,6 +6461,13 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
         </div>
       </section>
       <style jsx global>{`
+        .jcSorteosPage{max-width:1000px;margin:0 auto}.jcSorteosCard{padding:25px;text-align:center;background:linear-gradient(150deg,#071d35,#103761);border:1px solid #267bc1;color:#ebf5ff}.jcSorteosHeader{display:flex;justify-content:space-between;gap:12px;align-items:center}.jcSorteosStats{display:flex;justify-content:center;gap:16px;flex-wrap:wrap;margin:20px 0}.jcSorteosStats span{background:#09243f;border:1px solid #26689d;border-radius:14px;padding:10px 15px}.jcSorteosWheel{width:230px;height:230px;margin:22px auto;position:relative}.jcSorteosWheelCircle{width:100%;height:100%;border-radius:50%;border:9px solid #cfeeff;outline:4px solid #1d76ce;background:conic-gradient(#0066c3 0 45deg,#12a5f0 45deg 90deg,#0a2e66 90deg 135deg,#28b6f3 135deg 180deg,#0066c3 180deg 225deg,#12a5f0 225deg 270deg,#0a2e66 270deg 315deg,#28b6f3 315deg 360deg);display:flex;align-items:center;justify-content:center;flex-direction:column;color:white;text-shadow:0 2px 4px #001a31;box-shadow:0 10px 40px #0006}.jcSorteosWheelCircle span{font-size:42px}.jcSorteosWheelCircle b{font-size:16px}.jcSorteosWheelCircle small{font-size:10px;letter-spacing:2px}.jcSorteosWheelPointer{position:absolute;top:-30px;left:calc(50% - 13px);font-size:28px;color:#eabf49;z-index:2;text-shadow:0 2px 3px #001}.jcSorteosWheelSpin .jcSorteosWheelCircle{animation:jcSpinDaily 3.2s cubic-bezier(.11,.6,.17,1) both}@keyframes jcSpinDaily{from{transform:rotate(0)}to{transform:rotate(1840deg)}}.jcSorteosGo{margin:10px auto;padding:13px 24px}.jcSorteosHint{font-size:12px;max-width:630px;margin:14px auto}.jcSorteosStored{color:#9bddff}.jcSorteosWinners{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:14px;margin:20px 0}.jcSorteosWinner{padding:20px}.jcSorteosMessage{width:100%;margin-top:10px;background:#071d35;color:#eef8ff;border:1px solid #347fc0;border-radius:10px;padding:12px;resize:vertical}.jcSorteosActions{display:flex;flex-wrap:wrap;gap:10px;margin-top:12px}.jcSorteosList{padding:18px}.jcSorteosEntries>div{display:flex;justify-content:space-between;padding:8px;border-bottom:1px solid #35608b}.jcSorteosList summary{cursor:pointer;font-weight:700}
+        .jcFinalSlotOverlay{position:fixed;inset:0;z-index:9999;background:rgba(0,8,21,.79);display:flex;align-items:center;justify-content:center;padding:18px}
+        .jcFinalSlotDialog{width:min(100%,560px);max-height:90vh;overflow:auto;background:#0b2037;color:#e7f5ff;border:1px solid #248bdd;border-radius:16px;padding:24px;box-shadow:0 18px 70px #0009}
+        .jcFinalSlotDialog h2{margin:0 0 12px}.jcFinalSlotDialog p{color:#b9d6eb;line-height:1.5}
+        .jcFinalSlotFields{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:18px 0}.jcFinalSlotFields label{display:grid;gap:6px;color:#b9d6eb}
+        .jcFinalSlotFields select,.jcFinalSlotFields input{padding:10px;border-radius:9px;background:#061728;border:1px solid #2e678f;color:#fff;min-width:0}
+        .jcFinalSlotActions{display:flex;flex-wrap:wrap;gap:9px}
         .jcToolCards{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:14px;margin:15px 0 24px}
         .jcToolCard{display:flex;flex-direction:column;gap:9px;min-width:0;overflow-wrap:anywhere;padding:16px}
         .jcToolCard strong{font-size:16px}.jcToolCard small{color:#9fc1da}.jcToolCard p{white-space:pre-wrap;line-height:1.5}
