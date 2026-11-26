@@ -797,15 +797,46 @@ const [profitEditValue, setProfitEditValue] = useState("");
     return source.filter((c) => normalizeText(`${c.nombre} ${c.username || ""} ${c.telefono || ""}`).includes(q)).slice(0, 8);
   }, [clientQuery, data.clientes]);
 
+  // Popularidad real a partir de pedidos históricos (no cambia el catálogo).
+  // Cada venta cuenta una vez; excluimos registros marcados como pruebas.
+  const serviceSalesCounts = useMemo(() => {
+    const counts = {};
+    for (const order of (data.suscripciones || [])) {
+      if (!order.servicio_id || order.excluido_conteo === true) continue;
+      const key = String(order.servicio_id);
+      counts[key] = (counts[key] || 0) + 1;
+    }
+    return counts;
+  }, [data.suscripciones]);
+
   const serviceMatches = useMemo(() => {
     const q = normalizeText(serviceQuery);
-    const source = data.servicios
-      .filter((service) => service.activo)
-      .slice()
-      .sort((a, b) => String(a.nombre || "").localeCompare(String(b.nombre || ""), "es"));
-    if (!q) return source.slice(0, 8);
-    return source.filter((service) => normalizeText(`${service.nombre} ${service.descripcion || ""} ${serviceLabel(service)}`).includes(q)).slice(0, 8);
-  }, [serviceQuery, data.servicios]);
+    const source = (data.servicios || []).filter((service) => service.activo !== false);
+    const nameAndDuration = (service) => normalizeText(
+      `${service.nombre || ""} ${durationText(serviceDuration(service).tipo, serviceDuration(service).cantidad)}`
+    );
+    const matching = q ? source.filter((service) => {
+      const text = normalizeText(`${nameAndDuration(service)} ${service.descripcion || ""}`);
+      return text.includes(q);
+    }) : source;
+
+    return matching.slice().sort((a, b) => {
+      // Una búsqueda específica tiene prioridad sobre el historial de ventas.
+      const rank = (service) => {
+        if (!q) return 2;
+        const name = normalizeText(service.nombre);
+        const full = nameAndDuration(service);
+        if (q === full || q === name) return 0;
+        if (full.startsWith(q) || name.startsWith(q)) return 1;
+        return 2;
+      };
+      const rankDiff = rank(a) - rank(b);
+      if (rankDiff) return rankDiff;
+      const salesDiff = (serviceSalesCounts[String(b.id)] || 0) - (serviceSalesCounts[String(a.id)] || 0);
+      if (salesDiff) return salesDiff;
+      return String(a.nombre || "").localeCompare(String(b.nombre || ""), "es");
+    }).slice(0, 8);
+  }, [serviceQuery, data.servicios, serviceSalesCounts]);
 
   const inventoryUploadServiceMatches = useMemo(() => {
   const q = normalizeText(inventoryServiceQuery);
@@ -1018,6 +1049,17 @@ const [profitEditValue, setProfitEditValue] = useState("");
       const inventarioServicio = data.servicios.find((service) => String(service.id) === String(item.servicio_id));
       const nombreInventario = inventarioServicio?.nombre || item.servicios?.nombre || "";
       return Boolean(nombreInventario && serviceKey(nombreInventario) === selectedKey);
+    }).slice().sort((a, b) => {
+      // Cuenta que vence antes, primero. Sin vencimiento válido, al final.
+      const aDays = daysRemaining(a.fecha_vencimiento);
+      const bDays = daysRemaining(b.fecha_vencimiento);
+      const diff = (aDays === null ? Infinity : aDays) - (bDays === null ? Infinity : bDays);
+      if (diff !== 0) return diff;
+      // En empate, conservar el orden previo de menor cantidad de cupos libres.
+      const aFree = Number(a.cupos_total || 1) - (assignmentCountByInventory[a.id] || 0);
+      const bFree = Number(b.cupos_total || 1) - (assignmentCountByInventory[b.id] || 0);
+      if (aFree !== bFree) return aFree - bFree;
+      return String(a.created_at || "").localeCompare(String(b.created_at || ""));
     });
   }, [availableInventory, selectedDeliveryService, data.servicios]);
 
@@ -3672,7 +3714,9 @@ Cuenta para renovación
       const used = assignmentCountByInventory[item.id] || 0;
       const provider = providerInitials(item);
       const access = item.grupo || item.correo || "Cuenta";
-      return `${access} · ${provider || "Sin proveedor"} · ${Number(item.cupos_total || 1) - used}/${item.cupos_total} libres`;
+      const remaining = daysRemaining(item.fecha_vencimiento);
+      const remainingLabel = remaining === null ? "sin fecha" : remaining === 0 ? "vence hoy" : `${remaining} ${remaining === 1 ? "día" : "días"}`;
+      return `${access} · ${provider || "Sin proveedor"} · ${Number(item.cupos_total || 1) - used}/${item.cupos_total} libres · ⏳ ${remainingLabel}`;
     }
 
     return (
