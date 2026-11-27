@@ -90,16 +90,34 @@ async function getEntries(supabase, fecha) {
   return participantes;
 }
 
-function chooseWeightedTwo(participantes) {
-  const available = [...participantes];
+// Cada cupo recibe un número estable y una ubicación visual mezclada por fecha.
+// La selección de ganadores sigue siendo criptográficamente aleatoria.
+function boletosDeFecha(fecha, participantes) {
+  const tickets = [];
+  for (const person of participantes) {
+    for (let i = 0; i < Number(person.cupos || 0); i++) {
+      tickets.push({ cliente_id: String(person.cliente_id), nombre: person.nombre, numero: tickets.length + 1 });
+    }
+  }
+  let seed = 2166136261;
+  for (const ch of fecha) seed = Math.imul(seed ^ ch.charCodeAt(0), 16777619) >>> 0;
+  const random = () => { seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5; return (seed >>> 0) / 4294967296; };
+  for (let i = tickets.length - 1; i > 0; i--) {
+    const j = Math.floor(random() * (i + 1));
+    [tickets[i], tickets[j]] = [tickets[j], tickets[i]];
+  }
+  return tickets;
+}
+
+function chooseWeightedTwo(fecha, participantes) {
+  let disponibles = boletosDeFecha(fecha, participantes);
   const winners = [];
   for (let i = 0; i < 2; i++) {
-    const total = available.reduce((sum, item) => sum + item.cupos, 0);
-    if (total <= 0) throw new Error("Se requieren dos clientes diferentes.");
-    const ticket = randomInt(total);
-    let cumulative = 0;
-    const selectedIndex = available.findIndex(item => { cumulative += item.cupos; return ticket < cumulative; });
-    winners.push(available.splice(selectedIndex, 1)[0]);
+    if (!disponibles.length) throw new Error("Se requieren dos clientes diferentes.");
+    const ticket = disponibles[randomInt(disponibles.length)];
+    const person = participantes.find(p => String(p.cliente_id) === ticket.cliente_id);
+    winners.push({ ...person, cupo_ganador: ticket.numero });
+    disponibles = disponibles.filter(item => item.cliente_id !== ticket.cliente_id);
   }
   return winners;
 }
@@ -118,6 +136,7 @@ function payload(fecha, participantes, sorteo) {
     participantes: sorteo ? (sorteo.participantes || participantes) : participantes,
     participaciones: sorteo ? sorteo.participaciones : participantes.reduce((sum, p) => sum + p.cupos, 0),
     clientes_elegibles: sorteo ? sorteo.clientes_elegibles : participantes.length,
+    boletos: boletosDeFecha(fecha, sorteo ? (sorteo.participantes || participantes) : participantes),
     sorteo: sorteo ? { fecha: sorteo.fecha, ganadores: sorteo.ganadores, created_at: sorteo.created_at } : null
   };
 }
@@ -166,7 +185,7 @@ export async function POST(request) {
     if (existing) return Response.json(payload(fecha, [], existing));
     const participantes = await getEntries(auth.supabase, fecha);
     if (participantes.length < 2) return Response.json({ error: "Se necesitan al menos dos clientes distintos con compras registradas en la fecha seleccionada." }, { status: 400 });
-    const ganadores = chooseWeightedTwo(participantes);
+    const ganadores = chooseWeightedTwo(fecha, participantes);
     const record = {
       fecha, ganadores, participantes,
       participaciones: participantes.reduce((sum, item) => sum + item.cupos, 0),

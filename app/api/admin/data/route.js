@@ -78,6 +78,7 @@ let suscripcionesRes = await supabase
     reporte_vencimiento,
     fecha_reporte,
     excluido_conteo,
+    es_premio,
     clientes(id,nombre,username,telefono),
     servicio:servicios!suscripciones_servicio_id_fkey(nombre) 
   `)
@@ -101,6 +102,7 @@ let suscripcionesRes = await supabase
     reporte_vencimiento,
     fecha_reporte,
     excluido_conteo,
+    es_premio,
     clientes(id,nombre,username,telefono),
     servicio:servicios!suscripciones_servicio_id_fkey(nombre)
   `)
@@ -124,7 +126,7 @@ let suscripcionesRes = await supabase
   const plantillas_mensajes = templatesError ? [] : (templatesData || []);
 
   const allSubscriptions = suscripcionesRes.data || [];
-  const visibleSubscriptions = allSubscriptions.filter((item) => !archivedIds.has(item.id) && item.excluido_conteo !== true);
+  const visibleSubscriptions = allSubscriptions.filter((item) => !archivedIds.has(item.id) && (item.excluido_conteo !== true || item.es_premio === true));
   const order_counts = {};
   for (const item of allSubscriptions) {
     // Solo excluimos pedidos que se eliminaron manualmente en versiones anteriores.
@@ -153,7 +155,7 @@ const externalInventory = inventoryHistory.filter(
 );
 
 const visibleInventory = managedInventoryHistory.filter(
-  (item) => item.estado !== "reemplazada"
+  (item) => !["reemplazada", "retirada"].includes(item.estado)
 );
 
   

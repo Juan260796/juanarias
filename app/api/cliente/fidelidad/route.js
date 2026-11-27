@@ -23,7 +23,8 @@ export async function GET(request) {
   const { count, error: countError } = await supabase
     .from("suscripciones")
     .select("id", { count: "exact", head: true })
-    .eq("cliente_id", cliente.id);
+    .eq("cliente_id", cliente.id)
+    .eq("excluido_conteo", false);
   if (countError) return Response.json({ error: countError.message }, { status: 400 });
 
   const total = Number(count || 0);
