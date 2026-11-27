@@ -125,7 +125,7 @@ function suggestedClientAccess(fullName) {
 function normalizeText(value) {
   return String(value || "")
     .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\p{M}/gu, "")
     .toLowerCase()
     .trim()
     .replace(/\s+/g, " ");
@@ -421,7 +421,7 @@ export default function Admin() {
   const [token, setToken] = useState("");
   const [data, setData] = useState({ clientes: [], servicios: [], suscripciones: [], ganancias: [], promociones: [], premios_fidelidad: [], inventario: [], inventario_historico: [],inventario_externo: [], proveedores: [], asignaciones: [], order_counts: {}, plantillas_mensajes: [] });
   const filteredServices = data.servicios.filter((service) =>
-  service.nombre.toLowerCase().includes(serviceSearch.toLowerCase())
+  normalizeText(service.nombre).includes(normalizeText(serviceSearch))
 );
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState(false);
@@ -440,6 +440,12 @@ export default function Admin() {
   const [sorteoCargando, setSorteoCargando] = useState(false);
   const [sorteoGirando, setSorteoGirando] = useState(false);
   const [sorteoRevelado, setSorteoRevelado] = useState(false);
+  const [sorteoWheelRotation, setSorteoWheelRotation] = useState(0);
+  const [sorteoWheelSmooth, setSorteoWheelSmooth] = useState(false);
+  const [modoPedido, setModoPedido] = useState("venta");
+  const [premioGanadores, setPremioGanadores] = useState([]);
+  const [premioGanador, setPremioGanador] = useState("");
+
   const [clientQuery, setClientQuery] = useState("");
   const [showClientMatches, setShowClientMatches] = useState(false);
   const [serviceQuery, setServiceQuery] = useState("");
@@ -1676,6 +1682,60 @@ Perfil ${originalSlot}${pinLine}
 ${cliente}
 
 Disculpa las molestias ${String.fromCodePoint(0x1F64F, 0x1F3FE)}`);
+  }
+
+  async function cargarPremioGanadores() {
+    try {
+      const response = await api("/api/admin/premios-sorteos");
+      setPremioGanadores(response.ganadores || []);
+      return response.ganadores || [];
+    } catch (e) { setError(e.message); return []; }
+  }
+
+  function elegirGanadorPremio(key, lista = premioGanadores) {
+    setPremioGanador(key);
+    const item = lista.find(w => `${w.fecha_sorteo}:${w.cliente_id}` === key);
+    if (!item || item.entregado) return;
+    const cliente = (data.clientes || []).find(c => String(c.id) === String(item.cliente_id));
+    if (cliente) selectClient(cliente);
+  }
+
+  async function crearEntregaPremio() {
+    const winner = premioGanadores.find(item => `${item.fecha_sorteo}:${item.cliente_id}` === premioGanador && !item.entregado);
+    if (!winner) { setError("Selecciona un ganador con premio pendiente."); return; }
+    if (!selectedService) { setError("Selecciona el servicio del premio."); return; }
+    if (orderSource === "stock" && (!selectedInventoryItem || !deliveryForm.cupo_numero)) {
+      setError("Selecciona la cuenta de stock y el cupo que vas a regalar."); return;
+    }
+    if (orderSource === "external" && !String(externalOrderForm.correo || externalOrderForm.grupo || "").trim()) {
+      setError("Escribe las credenciales externas del premio."); return;
+    }
+    setWorking(true); setError(""); setMessage("");
+    try {
+      const youtubePorGrupo = isYoutubeService(selectedService) && youtubeExternalMode === "grupo";
+      const result = await api("/api/admin/premios-sorteos", {
+        method: "POST", body: JSON.stringify({
+          fecha_sorteo: winner.fecha_sorteo, cliente_id: winner.cliente_id,
+          servicio_id: selectedService.id, fecha_inicio: subForm.fecha_inicio || todayISO(),
+          origen: orderSource,
+          inventario_id: selectedInventoryItem?.id || "",
+          cupo_numero: orderSource === "stock" ? Number(deliveryForm.cupo_numero) : Number(externalOrderForm.perfil),
+          correo_cliente: orderSource === "stock" ? deliveryForm.correo_cliente : externalOrderForm.correo_cliente,
+          correo: youtubePorGrupo ? externalOrderForm.grupo : externalOrderForm.correo,
+          clave: externalOrderForm.clave, grupo: youtubePorGrupo ? externalOrderForm.grupo : "",
+          pin: externalOrderForm.pin, proveedor_id: externalOrderForm.proveedor_id
+        })
+      });
+      const client = result.cliente;
+      const sub = {...result.suscripcion, cliente:client, servicio:selectedService};
+      const account = result.cuenta ? {...result.cuenta, proveedores: (data.proveedores||[]).find(prov=>prov.id===result.cuenta.proveedor_id)} : null;
+      const access = account ? `\n\n🔐 Acceso:\nCorreo: ${account.correo || account.grupo || ""}\nContraseña: ${account.clave || "No aplica"}\nPerfil/cupo: ${result.asignacion?.cupo_numero || 1}${account.perfiles_pins?.[String(result.asignacion?.cupo_numero)] ? `\nPIN: ${account.perfiles_pins[String(result.asignacion.cupo_numero)]}` : ""}` : "\n\n🔐 Los datos de acceso se enviarán cuando estén disponibles.";
+      const text = `🎁🏆 ¡FELICIDADES, ${client.nombre}!\n\nGanaste uno de los dos premios del sorteo de JUAN CUENTAS correspondiente al ${winner.fecha_sorteo}.\n\n🎉 Premio: ${selectedService.nombre}\n📅 Inicio: ${formatDate(sub.fecha_inicio)}\n📅 Vencimiento: ${formatDate(sub.fecha_vencimiento)}${access}\n\n💙 Gracias por participar. ¡Disfruta tu premio!`;
+      setGeneratedDelivery({...withOrderMessages({text, cliente:client, servicio:selectedService, cuenta:account, asignacion:result.asignacion, suscripcion:result.suscripcion},client), premio:true});
+      await Promise.all([refresh(), cargarPremioGanadores()]);
+      setMessage("🎁 Premio entregado y registrado sin sumar una venta, ganancia ni participación.");
+    } catch(e) { setError(e.message); }
+    finally { setWorking(false); }
   }
 
   async function assignInventory() {
@@ -3724,20 +3784,39 @@ Cuenta para renovación
       <>
         <div className="pageHeading">
           <p className="muted">Ventas</p>
-          <h1>Generar nuevo pedido</h1>
-          <p className="pageLead">Crea pedidos con una cuenta del stock, con un perfil comprado por fuera o sin credenciales. Todo queda registrado en Cuentas activas y en el panel del cliente.</p>
+          <h1>{modoPedido === "premio" ? "Entregar premio de sorteo" : "Generar nuevo pedido"}</h1>
+          <p className="pageLead">{modoPedido === "premio" ? "Entrega al ganador un servicio sin aumentar ventas, ganancias ni participaciones de sorteos." : "Crea pedidos con una cuenta del stock, con un perfil comprado por fuera o sin credenciales. Todo queda registrado en Cuentas activas y en el panel del cliente."}</p>
         </div>
 
+        <div className="jcPrizeModeTabs" role="group" aria-label="Tipo de entrega">
+          <button type="button" className={modoPedido === "venta" ? "active" : ""} onClick={()=>{setModoPedido("venta");setGeneratedDelivery(null);}}>🛍️ Venta normal</button>
+          <button type="button" className={modoPedido === "premio" ? "active" : ""} onClick={()=>{setModoPedido("premio");setGeneratedDelivery(null);cargarPremioGanadores();}}>🎁 Entrega de premio</button>
+        </div>
         <form className="card orderForm" onSubmit={(e) => {
           e.preventDefault();
+          if (modoPedido === "premio") { crearEntregaPremio(); return; }
           if (orderUsesInventory) assignInventory();
           else if (orderUsesExternal) createExternalOrder();
           else createSubscription(e);
         }}>
+          {modoPedido === "premio" && <div className="jcPrizeChooser">
+            <strong>🎁 Ganador del sorteo</strong>
+            <p>Solo aparecen ganadores reales de sorteos realizados. Un premio se registra una sola vez.</p>
+            <div className="twoCols">
+              <label>Ganador y fecha
+                <select value={premioGanador} onChange={e=>elegirGanadorPremio(e.target.value)} required>
+                  <option value="">Selecciona un ganador pendiente</option>
+                  {premioGanadores.filter(w=>!w.entregado).map(w=><option key={`${w.fecha_sorteo}:${w.cliente_id}`} value={`${w.fecha_sorteo}:${w.cliente_id}`}>{w.fecha_sorteo} · Ganador {w.posicion_ganador} · {w.nombre}</option>)}
+                </select>
+              </label>
+              <div className="jcPrizeChooserHelp"><button type="button" className="miniButton" onClick={cargarPremioGanadores}>↻ Actualizar ganadores</button></div>
+            </div>
+            <small>No se sumará al contador de pedidos ni generará cupos nuevos para la ruleta.</small>
+          </div>}
           <div className="formSectionTitle"><span>1</span><div><h2>Cliente</h2><p>Escribe el nombre y selecciona una coincidencia.</p></div></div>
           <div className="autocompleteWrap">
-            <input autoComplete="off" placeholder="Buscar cliente por nombre, usuario o WhatsApp" value={clientQuery} onFocus={() => setShowClientMatches(true)} onBlur={() => setTimeout(() => setShowClientMatches(false), 160)} onChange={(e) => handleClientQuery(e.target.value)} required />
-            {showClientMatches && clientMatches.length > 0 && (
+            <input autoComplete="off" placeholder={modoPedido === "premio" ? "Se completa al elegir ganador" : "Buscar cliente por nombre, usuario o WhatsApp"} disabled={modoPedido === "premio"} value={clientQuery} onFocus={() => setShowClientMatches(true)} onBlur={() => setTimeout(() => setShowClientMatches(false), 160)} onChange={(e) => handleClientQuery(e.target.value)} required />
+            {modoPedido !== "premio" && showClientMatches && clientMatches.length > 0 && (
               <div className="autocompleteMenu">
                 {clientMatches.map((c) => (
                   <button type="button" key={c.id} onMouseDown={(e) => e.preventDefault()} onClick={() => selectClient(c)}>
@@ -3746,7 +3825,7 @@ Cuenta para renovación
                 ))}
               </div>
             )}
-            {showClientMatches && clientQuery && clientMatches.length === 0 && (
+            {modoPedido !== "premio" && showClientMatches && clientQuery && clientMatches.length === 0 && (
               <button type="button" className="button secondary" onMouseDown={(e)=>e.preventDefault()} onClick={() => {
                 updateNewClientName(clientQuery);
                 setShowClientCreateInline(true);
@@ -3754,7 +3833,7 @@ Cuenta para renovación
                 + Crear este cliente nuevo
               </button>
             )}
-            {showClientCreateInline && (
+            {modoPedido !== "premio" && showClientCreateInline && (
               <div className="card" style={{marginTop:12}}>
                 <h3>Crear cliente y continuar pedido</h3>
                 <div className="twoCols">
@@ -3928,23 +4007,24 @@ Cuenta para renovación
             </div>
           )}
 
+          {modoPedido === "premio" ? <div className="jcPrizeFree"><strong>🎁 Entrega gratuita</strong><span>Ganancia $0 · No cuenta como venta ni como participación del sorteo.</span></div> : <>
           <div className="formSectionTitle"><span>5</span><div><h2>Ganancia neta del pedido</h2><p>Escribe únicamente lo que este pedido te deja de ganancia en pesos. Ese será el valor usado en los reportes.</p></div></div>
           <label className="profitInputLabel">Ganancia neta (COP)
             <div className="moneyInputWrap"><span>$</span><input type="number" onWheel={bloquearScrollNumerico} inputMode="numeric" min="0" step="1" placeholder="Ej. 12000" value={profitValue} onChange={(e) => setProfitValue(e.target.value)} required /></div>
-          </label>
+          </label></>}
 
-          <button className="button primary orderSubmit" disabled={working || profitValue === "" || Number(profitValue) < 0 || !subForm.cliente_id || !subForm.servicio_id || (orderUsesInventory && (!deliveryForm.inventario_id || !deliveryForm.cupo_numero)) || (orderUsesExternal && (!(isYoutubeService(selectedService) && youtubeExternalMode === "grupo" ? (String(externalOrderForm.grupo || "").trim() && String(externalOrderForm.correo_cliente || "").trim()) : String(externalOrderForm.correo || "").trim()) || !Number(externalOrderForm.perfil)))}>
-            {working ? "Guardando..." : orderUsesInventory ? "Crear pedido y generar entrega" : orderUsesExternal ? "Crear pedido externo y generar entrega" : "Agregar pedido"}
+          <button className="button primary orderSubmit" disabled={working || (modoPedido !== "premio" && (profitValue === "" || Number(profitValue) < 0)) || (modoPedido === "premio" && (!premioGanador || !premioGanadores.some(w=>`${w.fecha_sorteo}:${w.cliente_id}`===premioGanador && !w.entregado))) || !subForm.cliente_id || !subForm.servicio_id || (orderUsesInventory && (!deliveryForm.inventario_id || !deliveryForm.cupo_numero)) || (orderUsesExternal && (!(isYoutubeService(selectedService) && youtubeExternalMode === "grupo" ? (String(externalOrderForm.grupo || "").trim() && String(externalOrderForm.correo_cliente || "").trim()) : String(externalOrderForm.correo || "").trim()) || !Number(externalOrderForm.perfil)))}>
+            {working ? "Guardando..." : modoPedido === "premio" ? "🎁 Registrar entrega gratuita del premio" : orderUsesInventory ? "Crear pedido y generar entrega" : orderUsesExternal ? "Crear pedido externo y generar entrega" : "Agregar pedido"}
           </button>
 
           {generatedDelivery && !generatedDelivery.garantia && (
             <div className="generatedDelivery jcOrderMessages" style={{display:"grid",gap:14,minWidth:0}}>
               <div className="generatedHeader">
-                <div><strong>✅ Pedido guardado · 2 mensajes separados</strong><span>Envía el servicio y el acceso al panel por separado.</span></div>
+                <div><strong>{generatedDelivery.premio ? "🎁 Premio entregado · mensajes preparados" : "✅ Pedido guardado · 2 mensajes separados"}</strong><span>Envía el servicio y el acceso al panel por separado.</span></div>
                 <button type="button" className="generatedClose" aria-label="Cerrar mensajes" onClick={() => setGeneratedDelivery(null)}>×</button>
               </div>
               <section className="jcOrderMessageCard">
-                <h3>📦 Mensaje 1 — Datos del pedido</h3>
+                <h3>{generatedDelivery.premio ? "🎁 Mensaje 1 — Entrega del premio" : "📦 Mensaje 1 — Datos del pedido"}</h3>
                 <textarea readOnly value={generatedDelivery.text || ""} />
                 <div className="inlineActions">
                   <button type="button" className="miniButton primaryMini" onClick={(event)=>copyText(generatedDelivery.text,event)}>📋 Copiar pedido</button>
@@ -4098,11 +4178,8 @@ function getAccountFilterValue(s, field) {
  function renderActivas() {
 
 const filtered = activeSubs.filter((s) => {
-  const value = String(
-    getAccountFilterValue(s, activeFilterField)
-  ).toLowerCase().trim();
-
-  const search = activeFilterValue.toLowerCase().trim();
+  const value = normalizeText(getAccountFilterValue(s, activeFilterField));
+  const search = normalizeText(activeFilterValue);
 
   if (!search) return true;
 
@@ -4201,11 +4278,8 @@ Solo aparecen cuentas con 1 día o más restante.
   function renderVencidas() {
 
 const filtered = expiredSubs.filter((s) => {
-  const value = String(
-    getAccountFilterValue(s, expiredFilterField)
-  ).toLowerCase().trim();
-
-  const search = expiredFilterValue.toLowerCase().trim();
+  const value = normalizeText(getAccountFilterValue(s, expiredFilterField));
+  const search = normalizeText(expiredFilterValue);
 
   if (!search) return true;
 
@@ -5194,8 +5268,8 @@ async function saveProfitEdit(item) {
       return (text.match(/\d+/g) || []).some(n => Number(n) > 0);
     };
     const visibleCatalogItems = catalogItems.filter(item => {
-      const text = `${item.titulo || ""} ${item.duracion || ""} ${item.descripcion || ""} ${item.precio || ""}`.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
-      const query = catalogSearch.trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+      const text = normalizeText(`${item.titulo || ""} ${item.duracion || ""} ${item.descripcion || ""} ${item.precio || ""}`);
+      const query = normalizeText(catalogSearch);
       if (query && !text.includes(query)) return false;
       if (catalogCategoryFilter !== "todas" && catalogItemCategory(item) !== catalogCategoryFilter) return false;
       if (catalogFilter === "publicados") return item.activo && withPrice(item.precio);
@@ -5367,6 +5441,8 @@ async function saveProfitEdit(item) {
     try {
       const result = await api(`/api/admin/sorteos${fecha ? `?fecha=${encodeURIComponent(fecha)}` : ""}`);
       setSorteoFecha(result.fecha);
+      setSorteoWheelSmooth(false);
+      setSorteoWheelRotation(0);
       setSorteoInfo(result);
       setSorteoRevelado(Boolean(result.sorteo));
     } catch (err) { setError(err.message); }
@@ -5380,8 +5456,22 @@ async function saveProfitEdit(item) {
     try {
       const result = await api("/api/admin/sorteos", { method: "POST", body: JSON.stringify({ fecha: sorteoInfo.fecha }) });
       setSorteoInfo(prev => ({ ...prev, ...result, estado: "realizado" }));
-      // La ruleta es la animación; el servidor selecciona y guarda a los ganadores.
-      await new Promise((resolve) => setTimeout(resolve, 3200));
+      // Las posiciones de boletos se conservan: el puntero termina sobre el cupo ganador.
+      const tickets = result.boletos || [];
+      const winners = result.sorteo?.ganadores || [];
+      let angle = sorteoWheelRotation;
+      setSorteoWheelSmooth(true);
+      for (const winner of winners) {
+        const index = tickets.findIndex(ticket => ticket.numero === winner.cupo_ganador);
+        if (index < 0 || !tickets.length) continue;
+        const step = 360/tickets.length;
+        const current = ((angle%360)+360)%360;
+        const target = (360-((index+.5)*step)%360)%360;
+        const offset = (target-current+360)%360;
+        angle += 1800+offset;
+        setSorteoWheelRotation(angle);
+        await new Promise((resolve)=>setTimeout(resolve,3300));
+      }
       setSorteoRevelado(true);
     } catch (err) { setError(err.message); }
     finally { setSorteoGirando(false); }
@@ -5410,7 +5500,32 @@ async function saveProfitEdit(item) {
           </span>
         </div>
         <div className="jcSorteosStats"><span>🎟️ <strong>{info?.participaciones ?? "—"}</strong> participaciones</span><span>👥 <strong>{info?.clientes_elegibles ?? "—"}</strong> clientes</span><span>🏆 <strong>2</strong> ganadores</span></div>
-        <div className={`jcSorteosWheel ${sorteoGirando ? "jcSorteosWheelSpin" : ""}`} aria-label="Ruleta de sorteo"><div className="jcSorteosWheelCircle"><span>🎁</span><b>JUAN CUENTAS</b><small>SORTEO DIARIO</small></div><div className="jcSorteosWheelPointer">▼</div></div>
+        <div className="jcSorteosWheel" aria-label="Ruleta con nombres y números de cupo">
+          <div className="jcSorteosWheelDisc" style={{transform:`rotate(${sorteoWheelRotation}deg)`,transition:sorteoWheelSmooth?"transform 3.2s cubic-bezier(.11,.6,.17,1)":"none"}}>
+            <svg viewBox="0 0 300 300" role="img" aria-label="Participaciones mezcladas de la fecha seleccionada">
+              {(info?.boletos || []).map((ticket,index,all)=>{
+                const step=360/all.length, angleA=index*step-90, angleB=(index+1)*step-90;
+                const rad=(angle)=>angle*Math.PI/180;
+                const pt=(angle,r)=>[150+r*Math.cos(rad(angle)),150+r*Math.sin(rad(angle))];
+                const [x1,y1]=pt(angleA,147),[x2,y2]=pt(angleB,147);
+                const wedge=all.length===1?"M 150 3 A 147 147 0 1 1 149.99 3 Z":`M 150 150 L ${x1} ${y1} A 147 147 0 ${step>180?1:0} 1 ${x2} ${y2} Z`;
+                const mid=(index+.5)*step-90;
+                const [tx,ty]=pt(mid,135);
+                const upside=mid>90&&mid<270;
+                const label=`#${ticket.numero} ${String(ticket.nombre||"Cliente").trim().slice(0,13)}`;
+                return <g key={`${ticket.cliente_id}:${ticket.numero}`}><path d={wedge} fill={["#036ac3","#16a8ea","#0a3978","#178acb","#06549e"][index%5]} stroke="#d2eaff" strokeWidth=".7"/>
+                  <text x={tx} y={ty} fill="#fff" fontSize={all.length>30?"5":all.length>18?"6":all.length>10?"7.4":"9"} fontWeight="700" textAnchor={upside?"start":"end"} dominantBaseline="middle" transform={`rotate(${mid+(upside?180:0)} ${tx} ${ty})`}>{label}</text>
+                </g>;
+              })}
+              {(!info?.boletos || info.boletos.length===0) && <circle cx="150" cy="150" r="147" fill="#0865b4"/>}
+              <circle cx="150" cy="150" r="41" fill="#06274e" stroke="#cee8ff" strokeWidth="4"/>
+              <text x="150" y="141" fontSize="20" textAnchor="middle">🎁</text>
+              <text x="150" y="158" fontSize="10" fontWeight="bold" textAnchor="middle" fill="white">JUAN CUENTAS</text>
+              <text x="150" y="168" fontSize="7" letterSpacing="1.5" textAnchor="middle" fill="#cfe5ff">SORTEO DIARIO</text>
+            </svg>
+          </div>
+          <div className="jcSorteosWheelPointer">▼</div>
+        </div>
         <p className="muted jcSorteosHint">Se incluyen únicamente las compras y renovaciones con fecha registrada igual al día seleccionado. El sorteo se habilita desde el día siguiente (hora Colombia).</p>
         {!info && <button type="button" className="miniButton primaryMini" disabled={sorteoCargando} onClick={cargarSorteo}>{sorteoCargando ? "Cargando..." : "Consultar participantes"}</button>}
         {info && !info.sorteo && <button type="button" className="miniButton primaryMini jcSorteosGo" disabled={sorteoGirando || sorteoCargando || fechaEnCurso || info.clientes_elegibles < 2} onClick={girarSorteo}>{sorteoGirando ? "🎡 Girando ruleta..." : "🎡 Girar y elegir 2 ganadores"}</button>}
@@ -5421,7 +5536,11 @@ async function saveProfitEdit(item) {
       {ganadores.length > 0 && <div className="jcSorteosWinners">{ganadores.map((ganador, index) => <div className="card jcSorteosWinner" key={ganador.cliente_id}>
         <h3>🏆 Ganador {index + 1}: {ganador.nombre}</h3><p className="muted">Participaciones en la fecha seleccionada: {ganador.cupos}</p>
         <textarea className="jcSorteosMessage" readOnly rows={7} value={mensajeGanador(ganador, index + 1)} aria-label={`Mensaje ganador ${index + 1}`} />
-        <div className="jcSorteosActions"><button type="button" className="miniButton primaryMini" onClick={async () => {try {await navigator.clipboard.writeText(mensajeGanador(ganador,index + 1)); setMessage("Mensaje copiado.");} catch {setError("No fue posible copiar el mensaje.");}}}>📋 Copiar mensaje</button>
+        <div className="jcSorteosActions"><button type="button" className="miniButton" onClick={async()=>{
+          navigate("pedido");setModoPedido("premio");setGeneratedDelivery(null);
+          const list=await cargarPremioGanadores();
+          elegirGanadorPremio(`${info.fecha}:${ganador.cliente_id}`,list);
+        }}>🎁 Entregar premio</button><button type="button" className="miniButton primaryMini" onClick={async () => {try {await navigator.clipboard.writeText(mensajeGanador(ganador,index + 1)); setMessage("Mensaje copiado.");} catch {setError("No fue posible copiar el mensaje.");}}}>📋 Copiar mensaje</button>
         {whatsappNumber(ganador.telefono) && <a className="miniButton" target="_blank" rel="noopener noreferrer" href={`https://wa.me/${whatsappNumber(ganador.telefono)}?text=${encodeURIComponent(mensajeGanador(ganador,index + 1))}`}>Enviar por WhatsApp</a>}</div>
       </div>)}</div>}
       {info?.participantes?.length > 0 && <details className="card jcSorteosList"><summary>Ver participantes del día ({info.participantes.length})</summary><div className="jcSorteosEntries">{info.participantes.map(item => <div key={item.cliente_id}><span>{item.nombre}</span><b>{item.cupos} {item.cupos === 1 ? "cupo" : "cupos"}</b></div>)}</div></details>}
@@ -5430,8 +5549,7 @@ async function saveProfitEdit(item) {
 
   function renderPromociones() {
     const filteredPromotions = (data.promociones || []).filter((promo) =>
-      String(promo.titulo || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
-        .includes(promotionSearch.trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase())
+      normalizeText(promo.titulo).includes(normalizeText(promotionSearch))
     );
     const rewardClient = (reward) => Array.isArray(reward.clientes) ? reward.clientes[0] : reward.clientes;
 
@@ -5683,11 +5801,10 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
     ${item.correo || ""}
     ${item.grupo || ""}
     ${item.estado || ""}
-  `.toLowerCase();
+  `;
 
-
-  // BUSCADOR
-  if (!texto.includes(streamSearch.toLowerCase())) {
+  // BUSCADOR (ignora tildes y otros signos diacríticos).
+  if (!normalizeText(texto).includes(normalizeText(streamSearch))) {
     return false;
   }
 
@@ -5765,7 +5882,7 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
   onChange={(e) => setProviderSearch(e.target.value)}
 />
 
-            {bulkDeleteBar("proveedores", (data.proveedores || []).filter((provider) => provider.activo !== false && `${provider.iniciales || ""} ${provider.plataforma || ""}`.toLowerCase().includes(providerSearch.toLowerCase())).map((provider) => provider.id), "/api/admin/proveedores", "proveedor")}
+            {bulkDeleteBar("proveedores", (data.proveedores || []).filter((provider) => provider.activo !== false && normalizeText(`${provider.iniciales || ""} ${provider.plataforma || ""}`).includes(normalizeText(providerSearch))).map((provider) => provider.id), "/api/admin/proveedores", "proveedor")}
             <div className="providerList">
               <div className="providerListHead"><span>{deleteMode["proveedores"] ? "Seleccionar / Iniciales" : "Iniciales"}</span><span>Acción</span></div>
              
@@ -5773,9 +5890,8 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
               {(data.proveedores || [])
 .filter((provider) => provider.activo !== false)
 .filter((provider) =>
-  `${provider.iniciales || ""} ${provider.plataforma || ""}`
-    .toLowerCase()
-    .includes(providerSearch.toLowerCase())
+  normalizeText(`${provider.iniciales || ""} ${provider.plataforma || ""}`)
+    .includes(normalizeText(providerSearch))
 )
 .map((provider) => (
                 <div className="providerListRow" key={provider.id}>
@@ -5936,13 +6052,8 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
             <div className="stockCards compactStockCards">
   {[...inventoryServices]
   .filter((service) => {
-    const name = inventoryServiceLabel(service)
-      .toLowerCase()
-      .trim();
-
-    const search = stockSearch
-      .toLowerCase()
-      .trim();
+    const name = normalizeText(inventoryServiceLabel(service));
+    const search = normalizeText(stockSearch);
 
     return name.includes(search);
   })
@@ -6521,6 +6632,7 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
         </div>
       </section>
       <style jsx global>{`
+        .jcPrizeModeTabs{display:flex;gap:8px;margin:0 0 16px;background:#071d35;border:1px solid #26689d;border-radius:12px;padding:7px;flex-wrap:wrap}.jcPrizeModeTabs button{flex:1;min-width:165px;background:#0b2543;border:1px solid #2567a0;border-radius:9px;color:#bdddff;padding:12px;cursor:pointer;font-weight:700}.jcPrizeModeTabs button.active{background:linear-gradient(110deg,#0752a5,#0795de);color:white}.jcPrizeChooser{background:#0b2b4e;border:1px solid #2180cb;border-radius:12px;padding:16px;margin-bottom:20px;color:#e5f4ff}.jcPrizeChooser p,.jcPrizeChooser small{color:#abcee9}.jcPrizeChooserHelp{display:flex;align-items:end}.jcPrizeFree{padding:15px;background:#0b2b4e;border:1px solid #2392ca;border-radius:12px;display:flex;gap:12px;flex-wrap:wrap;margin:14px 0;color:#dff3ff}.jcPrizeFree span{color:#adcee7}.jcSorteosWheel{width:min(285px,80vw)!important;height:min(285px,80vw)!important;margin:20px auto!important}.jcSorteosWheelDisc{width:100%;height:100%;border-radius:50%;border:6px solid #cfeeff;outline:3px solid #217acc;overflow:hidden;background:#064d95;box-shadow:0 8px 30px #0007}.jcSorteosWheelDisc svg{width:100%;height:100%;display:block}.jcSorteosWheelPointer{top:-30px!important}
         .jcSorteosDateRow{display:flex;align-items:end;justify-content:center;gap:12px;flex-wrap:wrap;margin:16px 0 8px;text-align:left}.jcSorteosDateRow label{display:flex;flex-direction:column;gap:5px;font-size:12px;color:#a4d7fc;min-width:190px}.jcSorteosDateRow input,.jcSorteosDateRow select{width:100%;background:#071d35;border:1px solid #3279b7;border-radius:10px;color:#e8f4ff;padding:10px;font:inherit}.jcSorteosDateRow select{max-width:300px}.jcSorteosStatus{border:1px solid #b78739;background:#3d301f;color:#ffdc94;padding:10px 14px;border-radius:12px;font-size:13px;white-space:nowrap}.jcSorteosStatus.done{border-color:#318f81;background:#103a38;color:#9ef1d7}.jcSorteosPage{max-width:1000px;margin:0 auto}.jcSorteosCard{padding:25px;text-align:center;background:linear-gradient(150deg,#071d35,#103761);border:1px solid #267bc1;color:#ebf5ff}.jcSorteosHeader{display:flex;justify-content:space-between;gap:12px;align-items:center}.jcSorteosStats{display:flex;justify-content:center;gap:16px;flex-wrap:wrap;margin:20px 0}.jcSorteosStats span{background:#09243f;border:1px solid #26689d;border-radius:14px;padding:10px 15px}.jcSorteosWheel{width:230px;height:230px;margin:22px auto;position:relative}.jcSorteosWheelCircle{width:100%;height:100%;border-radius:50%;border:9px solid #cfeeff;outline:4px solid #1d76ce;background:conic-gradient(#0066c3 0 45deg,#12a5f0 45deg 90deg,#0a2e66 90deg 135deg,#28b6f3 135deg 180deg,#0066c3 180deg 225deg,#12a5f0 225deg 270deg,#0a2e66 270deg 315deg,#28b6f3 315deg 360deg);display:flex;align-items:center;justify-content:center;flex-direction:column;color:white;text-shadow:0 2px 4px #001a31;box-shadow:0 10px 40px #0006}.jcSorteosWheelCircle span{font-size:42px}.jcSorteosWheelCircle b{font-size:16px}.jcSorteosWheelCircle small{font-size:10px;letter-spacing:2px}.jcSorteosWheelPointer{position:absolute;top:-30px;left:calc(50% - 13px);font-size:28px;color:#eabf49;z-index:2;text-shadow:0 2px 3px #001}.jcSorteosWheelSpin .jcSorteosWheelCircle{animation:jcSpinDaily 3.2s cubic-bezier(.11,.6,.17,1) both}@keyframes jcSpinDaily{from{transform:rotate(0)}to{transform:rotate(1840deg)}}.jcSorteosGo{margin:10px auto;padding:13px 24px}.jcSorteosHint{font-size:12px;max-width:630px;margin:14px auto}.jcSorteosStored{color:#9bddff}.jcSorteosWinners{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:14px;margin:20px 0}.jcSorteosWinner{padding:20px}.jcSorteosMessage{width:100%;margin-top:10px;background:#071d35;color:#eef8ff;border:1px solid #347fc0;border-radius:10px;padding:12px;resize:vertical}.jcSorteosActions{display:flex;flex-wrap:wrap;gap:10px;margin-top:12px}.jcSorteosList{padding:18px}.jcSorteosEntries>div{display:flex;justify-content:space-between;padding:8px;border-bottom:1px solid #35608b}.jcSorteosList summary{cursor:pointer;font-weight:700}
         .jcFinalSlotOverlay{position:fixed;inset:0;z-index:9999;background:rgba(0,8,21,.79);display:flex;align-items:center;justify-content:center;padding:18px}
         .jcFinalSlotDialog{width:min(100%,560px);max-height:90vh;overflow:auto;background:#0b2037;color:#e7f5ff;border:1px solid #248bdd;border-radius:16px;padding:24px;box-shadow:0 18px 70px #0009}
