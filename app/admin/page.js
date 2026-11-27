@@ -436,6 +436,7 @@ export default function Admin() {
   const [view, setView] = useState("pedido");
   const [menuOpen, setMenuOpen] = useState(false);
   const [sorteoInfo, setSorteoInfo] = useState(null);
+  const [sorteoFecha, setSorteoFecha] = useState("");
   const [sorteoCargando, setSorteoCargando] = useState(false);
   const [sorteoGirando, setSorteoGirando] = useState(false);
   const [sorteoRevelado, setSorteoRevelado] = useState(false);
@@ -5359,10 +5360,13 @@ async function saveProfitEdit(item) {
     </>;
   }
 
-  async function cargarSorteo() {
+  async function cargarSorteo(fechaSeleccionada) {
+    const fecha = typeof fechaSeleccionada === "string" ? fechaSeleccionada : sorteoFecha;
     setSorteoCargando(true);
+    setSorteoInfo(null);
     try {
-      const result = await api("/api/admin/sorteos");
+      const result = await api(`/api/admin/sorteos${fecha ? `?fecha=${encodeURIComponent(fecha)}` : ""}`);
+      setSorteoFecha(result.fecha);
       setSorteoInfo(result);
       setSorteoRevelado(Boolean(result.sorteo));
     } catch (err) { setError(err.message); }
@@ -5370,12 +5374,12 @@ async function saveProfitEdit(item) {
   }
 
   async function girarSorteo() {
-    if (sorteoGirando || sorteoCargando) return;
+    if (sorteoGirando || sorteoCargando || !sorteoInfo || sorteoInfo.fecha > sorteoInfo.fecha_maxima_sorteable) return;
     setSorteoGirando(true);
     setSorteoRevelado(false);
     try {
-      const result = await api("/api/admin/sorteos", { method: "POST", body: JSON.stringify({}) });
-      setSorteoInfo(result);
+      const result = await api("/api/admin/sorteos", { method: "POST", body: JSON.stringify({ fecha: sorteoInfo.fecha }) });
+      setSorteoInfo(prev => ({ ...prev, ...result, estado: "realizado" }));
       // La ruleta es la animación; el servidor selecciona y guarda a los ganadores.
       await new Promise((resolve) => setTimeout(resolve, 3200));
       setSorteoRevelado(true);
@@ -5384,31 +5388,43 @@ async function saveProfitEdit(item) {
   }
 
   function mensajeGanador(ganador, numero) {
-    return `🎉 ¡Felicidades, ${ganador.nombre}! 🎉\n\nHas sido seleccionado(a) como ganador(a) #${numero} del sorteo diario de Juan Cuentas. 🏆\n\nGracias por tus compras y por confiar en nosotros. 💙\n\nEscríbenos para coordinar la entrega de tu premio.`;
+    return `🎉 ¡Felicidades, ${ganador.nombre}! 🎉\n\nHas sido seleccionado(a) como ganador(a) #${numero} del sorteo de Juan Cuentas correspondiente a las compras del ${sorteoInfo?.fecha || "día seleccionado"}. 🏆\n\nGracias por tus compras y por confiar en nosotros. 💙\n\nEscríbenos para coordinar la entrega de tu premio.`;
   }
 
   function renderSorteos() {
     const info = sorteoInfo;
     const ganadores = sorteoRevelado ? (info?.sorteo?.ganadores || []) : [];
+    const hoy = info?.fecha_hoy;
+    const fechaEnCurso = info?.fecha === hoy;
+    const etiquetaFecha = fecha => { const [y,m,d] = fecha.split("-"); return `${d}/${m}/${y}`; };
     return <section className="jcSorteosPage">
-      <div className="pageTitle"><div><h1>🎡 Sorteos diarios</h1><p className="pageLead">Cada servicio comprado hoy suma una participación. Dos ganadores diferentes por día.</p></div></div>
+      <div className="pageTitle"><div><h1>🎡 Sorteos diarios</h1><p className="pageLead">Cada compra participa en la fecha registrada. Sortea las ventas al día siguiente o después, con dos ganadores diferentes.</p></div></div>
       <div className="card jcSorteosCard">
-        <div className="jcSorteosHeader"><strong>📅 Sorteo del {info?.fecha || "día de hoy"}</strong><button type="button" className="miniButton" disabled={sorteoCargando || sorteoGirando} onClick={cargarSorteo}>↻ Actualizar</button></div>
+        <div className="jcSorteosHeader"><strong>📅 Sorteo de las ventas del {info?.fecha ? etiquetaFecha(info.fecha) : "día seleccionado"}</strong><button type="button" className="miniButton" disabled={sorteoCargando || sorteoGirando} onClick={() => cargarSorteo()}>↻ Actualizar</button></div>
+        <div className="jcSorteosDateRow">
+          <label>Seleccionar fecha de las ventas
+            <input type="date" value={sorteoFecha} max={hoy || undefined} disabled={sorteoCargando || sorteoGirando} onChange={event => { setSorteoFecha(event.target.value); if (event.target.value) cargarSorteo(event.target.value); }} />
+          </label>
+          <span className={`jcSorteosStatus ${info?.estado === "realizado" ? "done" : ""}`}>
+            {info?.estado === "realizado" ? "✅ Realizado" : fechaEnCurso ? "🕒 Ventas en curso" : "🕒 Pendiente por realizar"}
+          </span>
+        </div>
         <div className="jcSorteosStats"><span>🎟️ <strong>{info?.participaciones ?? "—"}</strong> participaciones</span><span>👥 <strong>{info?.clientes_elegibles ?? "—"}</strong> clientes</span><span>🏆 <strong>2</strong> ganadores</span></div>
         <div className={`jcSorteosWheel ${sorteoGirando ? "jcSorteosWheelSpin" : ""}`} aria-label="Ruleta de sorteo"><div className="jcSorteosWheelCircle"><span>🎁</span><b>JUAN CUENTAS</b><small>SORTEO DIARIO</small></div><div className="jcSorteosWheelPointer">▼</div></div>
-        <p className="muted jcSorteosHint">Las compras se contabilizan por su registro real (hora Colombia). No se mezclan compras de otros días ni participan pedidos de prueba.</p>
+        <p className="muted jcSorteosHint">Se incluyen únicamente las compras y renovaciones con fecha registrada igual al día seleccionado. El sorteo se habilita desde el día siguiente (hora Colombia).</p>
         {!info && <button type="button" className="miniButton primaryMini" disabled={sorteoCargando} onClick={cargarSorteo}>{sorteoCargando ? "Cargando..." : "Consultar participantes"}</button>}
-        {info && !info.sorteo && <button type="button" className="miniButton primaryMini jcSorteosGo" disabled={sorteoGirando || sorteoCargando || info.clientes_elegibles < 2} onClick={girarSorteo}>{sorteoGirando ? "🎡 Girando ruleta..." : "🎡 Girar y elegir 2 ganadores"}</button>}
-        {info?.sorteo && !sorteoGirando && <p className="jcSorteosStored">✅ Sorteo realizado y guardado. Los ganadores de hoy no cambiarán.</p>}
-        {info && info.clientes_elegibles < 2 && !info.sorteo && <p className="muted">Se necesitan al menos dos clientes diferentes con compras registradas hoy.</p>}
+        {info && !info.sorteo && <button type="button" className="miniButton primaryMini jcSorteosGo" disabled={sorteoGirando || sorteoCargando || fechaEnCurso || info.clientes_elegibles < 2} onClick={girarSorteo}>{sorteoGirando ? "🎡 Girando ruleta..." : "🎡 Girar y elegir 2 ganadores"}</button>}
+        {info?.sorteo && !sorteoGirando && <p className="jcSorteosStored">✅ Sorteo realizado y guardado para esta fecha. Los ganadores no cambiarán.</p>}
+        {fechaEnCurso && <p className="muted">Las ventas de hoy se sortean a partir de mañana.</p>}
+        {info && info.clientes_elegibles < 2 && !info.sorteo && !fechaEnCurso && <p className="muted">Se necesitan al menos dos clientes diferentes con compras registradas para esta fecha.</p>}
       </div>
       {ganadores.length > 0 && <div className="jcSorteosWinners">{ganadores.map((ganador, index) => <div className="card jcSorteosWinner" key={ganador.cliente_id}>
-        <h3>🏆 Ganador {index + 1}: {ganador.nombre}</h3><p className="muted">Participaciones acumuladas hoy: {ganador.cupos}</p>
+        <h3>🏆 Ganador {index + 1}: {ganador.nombre}</h3><p className="muted">Participaciones en la fecha seleccionada: {ganador.cupos}</p>
         <textarea className="jcSorteosMessage" readOnly rows={7} value={mensajeGanador(ganador, index + 1)} aria-label={`Mensaje ganador ${index + 1}`} />
         <div className="jcSorteosActions"><button type="button" className="miniButton primaryMini" onClick={async () => {try {await navigator.clipboard.writeText(mensajeGanador(ganador,index + 1)); setMessage("Mensaje copiado.");} catch {setError("No fue posible copiar el mensaje.");}}}>📋 Copiar mensaje</button>
         {whatsappNumber(ganador.telefono) && <a className="miniButton" target="_blank" rel="noopener noreferrer" href={`https://wa.me/${whatsappNumber(ganador.telefono)}?text=${encodeURIComponent(mensajeGanador(ganador,index + 1))}`}>Enviar por WhatsApp</a>}</div>
       </div>)}</div>}
-      {info?.participantes?.length > 0 && <details className="card jcSorteosList"><summary>Ver participantes de hoy ({info.participantes.length})</summary><div className="jcSorteosEntries">{info.participantes.map(item => <div key={item.cliente_id}><span>{item.nombre}</span><b>{item.cupos} {item.cupos === 1 ? "cupo" : "cupos"}</b></div>)}</div></details>}
+      {info?.participantes?.length > 0 && <details className="card jcSorteosList"><summary>Ver participantes del día ({info.participantes.length})</summary><div className="jcSorteosEntries">{info.participantes.map(item => <div key={item.cliente_id}><span>{item.nombre}</span><b>{item.cupos} {item.cupos === 1 ? "cupo" : "cupos"}</b></div>)}</div></details>}
     </section>;
   }
 
@@ -6505,7 +6521,7 @@ const filteredStreamingInventory = streamingInventory.filter((item) => {
         </div>
       </section>
       <style jsx global>{`
-        .jcSorteosPage{max-width:1000px;margin:0 auto}.jcSorteosCard{padding:25px;text-align:center;background:linear-gradient(150deg,#071d35,#103761);border:1px solid #267bc1;color:#ebf5ff}.jcSorteosHeader{display:flex;justify-content:space-between;gap:12px;align-items:center}.jcSorteosStats{display:flex;justify-content:center;gap:16px;flex-wrap:wrap;margin:20px 0}.jcSorteosStats span{background:#09243f;border:1px solid #26689d;border-radius:14px;padding:10px 15px}.jcSorteosWheel{width:230px;height:230px;margin:22px auto;position:relative}.jcSorteosWheelCircle{width:100%;height:100%;border-radius:50%;border:9px solid #cfeeff;outline:4px solid #1d76ce;background:conic-gradient(#0066c3 0 45deg,#12a5f0 45deg 90deg,#0a2e66 90deg 135deg,#28b6f3 135deg 180deg,#0066c3 180deg 225deg,#12a5f0 225deg 270deg,#0a2e66 270deg 315deg,#28b6f3 315deg 360deg);display:flex;align-items:center;justify-content:center;flex-direction:column;color:white;text-shadow:0 2px 4px #001a31;box-shadow:0 10px 40px #0006}.jcSorteosWheelCircle span{font-size:42px}.jcSorteosWheelCircle b{font-size:16px}.jcSorteosWheelCircle small{font-size:10px;letter-spacing:2px}.jcSorteosWheelPointer{position:absolute;top:-30px;left:calc(50% - 13px);font-size:28px;color:#eabf49;z-index:2;text-shadow:0 2px 3px #001}.jcSorteosWheelSpin .jcSorteosWheelCircle{animation:jcSpinDaily 3.2s cubic-bezier(.11,.6,.17,1) both}@keyframes jcSpinDaily{from{transform:rotate(0)}to{transform:rotate(1840deg)}}.jcSorteosGo{margin:10px auto;padding:13px 24px}.jcSorteosHint{font-size:12px;max-width:630px;margin:14px auto}.jcSorteosStored{color:#9bddff}.jcSorteosWinners{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:14px;margin:20px 0}.jcSorteosWinner{padding:20px}.jcSorteosMessage{width:100%;margin-top:10px;background:#071d35;color:#eef8ff;border:1px solid #347fc0;border-radius:10px;padding:12px;resize:vertical}.jcSorteosActions{display:flex;flex-wrap:wrap;gap:10px;margin-top:12px}.jcSorteosList{padding:18px}.jcSorteosEntries>div{display:flex;justify-content:space-between;padding:8px;border-bottom:1px solid #35608b}.jcSorteosList summary{cursor:pointer;font-weight:700}
+        .jcSorteosDateRow{display:flex;align-items:end;justify-content:center;gap:12px;flex-wrap:wrap;margin:16px 0 8px;text-align:left}.jcSorteosDateRow label{display:flex;flex-direction:column;gap:5px;font-size:12px;color:#a4d7fc;min-width:190px}.jcSorteosDateRow input,.jcSorteosDateRow select{width:100%;background:#071d35;border:1px solid #3279b7;border-radius:10px;color:#e8f4ff;padding:10px;font:inherit}.jcSorteosDateRow select{max-width:300px}.jcSorteosStatus{border:1px solid #b78739;background:#3d301f;color:#ffdc94;padding:10px 14px;border-radius:12px;font-size:13px;white-space:nowrap}.jcSorteosStatus.done{border-color:#318f81;background:#103a38;color:#9ef1d7}.jcSorteosPage{max-width:1000px;margin:0 auto}.jcSorteosCard{padding:25px;text-align:center;background:linear-gradient(150deg,#071d35,#103761);border:1px solid #267bc1;color:#ebf5ff}.jcSorteosHeader{display:flex;justify-content:space-between;gap:12px;align-items:center}.jcSorteosStats{display:flex;justify-content:center;gap:16px;flex-wrap:wrap;margin:20px 0}.jcSorteosStats span{background:#09243f;border:1px solid #26689d;border-radius:14px;padding:10px 15px}.jcSorteosWheel{width:230px;height:230px;margin:22px auto;position:relative}.jcSorteosWheelCircle{width:100%;height:100%;border-radius:50%;border:9px solid #cfeeff;outline:4px solid #1d76ce;background:conic-gradient(#0066c3 0 45deg,#12a5f0 45deg 90deg,#0a2e66 90deg 135deg,#28b6f3 135deg 180deg,#0066c3 180deg 225deg,#12a5f0 225deg 270deg,#0a2e66 270deg 315deg,#28b6f3 315deg 360deg);display:flex;align-items:center;justify-content:center;flex-direction:column;color:white;text-shadow:0 2px 4px #001a31;box-shadow:0 10px 40px #0006}.jcSorteosWheelCircle span{font-size:42px}.jcSorteosWheelCircle b{font-size:16px}.jcSorteosWheelCircle small{font-size:10px;letter-spacing:2px}.jcSorteosWheelPointer{position:absolute;top:-30px;left:calc(50% - 13px);font-size:28px;color:#eabf49;z-index:2;text-shadow:0 2px 3px #001}.jcSorteosWheelSpin .jcSorteosWheelCircle{animation:jcSpinDaily 3.2s cubic-bezier(.11,.6,.17,1) both}@keyframes jcSpinDaily{from{transform:rotate(0)}to{transform:rotate(1840deg)}}.jcSorteosGo{margin:10px auto;padding:13px 24px}.jcSorteosHint{font-size:12px;max-width:630px;margin:14px auto}.jcSorteosStored{color:#9bddff}.jcSorteosWinners{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:14px;margin:20px 0}.jcSorteosWinner{padding:20px}.jcSorteosMessage{width:100%;margin-top:10px;background:#071d35;color:#eef8ff;border:1px solid #347fc0;border-radius:10px;padding:12px;resize:vertical}.jcSorteosActions{display:flex;flex-wrap:wrap;gap:10px;margin-top:12px}.jcSorteosList{padding:18px}.jcSorteosEntries>div{display:flex;justify-content:space-between;padding:8px;border-bottom:1px solid #35608b}.jcSorteosList summary{cursor:pointer;font-weight:700}
         .jcFinalSlotOverlay{position:fixed;inset:0;z-index:9999;background:rgba(0,8,21,.79);display:flex;align-items:center;justify-content:center;padding:18px}
         .jcFinalSlotDialog{width:min(100%,560px);max-height:90vh;overflow:auto;background:#0b2037;color:#e7f5ff;border:1px solid #248bdd;border-radius:16px;padding:24px;box-shadow:0 18px 70px #0009}
         .jcFinalSlotDialog h2{margin:0 0 12px}.jcFinalSlotDialog p{color:#b9d6eb;line-height:1.5}
